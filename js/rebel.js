@@ -1,4 +1,53 @@
 (() => {
+  const typewriter = document.querySelector('[data-typewriter]');
+  if (typewriter) {
+    const snippets = [
+      ['Python', 'print("Hello, World!")'],
+      ['JavaScript', 'console.log("Hello, World!");'],
+      ['C', 'printf("Hello, World!\\n");'],
+      ['Java', 'System.out.println("Hello!");'],
+      ['SQL', 'SELECT * FROM life;'],
+      ['Python', 'import this']
+    ];
+    const language = document.querySelector('[data-code-language]');
+    const toggle = document.querySelector('.typing-toggle');
+    const terminal = document.querySelector('.hero-terminal');
+    const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+    let index = 0, length = 0, deleting = false, paused = false, timer;
+    const paint = () => {
+      language.textContent = snippets[index][0];
+      typewriter.textContent = snippets[index][1].slice(0, length);
+    };
+    const tick = () => {
+      if (paused || reduced.matches || document.hidden) return;
+      const line = snippets[index][1];
+      length += deleting ? -1 : 1;
+      paint();
+      let delay = deleting ? 42 : 95;
+      if (!deleting && length === line.length) { deleting = true; delay = 2100; }
+      else if (deleting && length === 0) {
+        deleting = false; index = (index + 1) % snippets.length; delay = 450;
+      }
+      timer = setTimeout(tick, delay);
+    };
+    const sync = () => {
+      clearTimeout(timer);
+      terminal.classList.toggle('typing-paused', paused || reduced.matches || document.hidden);
+      toggle.hidden = reduced.matches;
+      if (reduced.matches) {
+        length = snippets[index][1].length; deleting = true; paint();
+      } else if (!paused && !document.hidden) timer = setTimeout(tick, 500);
+    };
+    toggle.addEventListener('click', () => {
+      paused = !paused;
+      toggle.textContent = paused ? '继续动画 ▶' : '暂停动画 Ⅱ';
+      toggle.setAttribute('aria-label', paused ? '继续代码动画' : '暂停代码动画');
+      sync();
+    });
+    reduced.addEventListener('change', sync);
+    document.addEventListener('visibilitychange', sync);
+    paint(); sync();
+  }
   const dialog = document.querySelector('#search-dialog');
   const input = document.querySelector('#search-input');
   const results = document.querySelector('#search-results');

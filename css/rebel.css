@@ -8,3 +8,16 @@ body{overflow-x:clip}.pagination:has(>.current:only-child){display:none}
 .reading-toc ol{list-style:none}.prose .headerlink{font-size:0}.prose .headerlink:focus-visible:before{content:'#';font-size:16px}
 
 .hero-art{max-width:100%}html{overflow-x:clip}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.hero-copy{min-width:0}
+.hero h1>.hero-terminal{display:block;margin:24px 0 0;border:2px solid var(--paper);background:#101014;box-shadow:7px 7px 0 var(--red);font:normal 22px/1.6 Consolas,'Cascadia Code','Courier New',monospace;letter-spacing:0}
+.terminal-bar{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #ffffff26;padding:10px 16px;color:#c4c1c1;font:12px/1.5 Consolas,monospace}
+.terminal-dots{color:var(--red);letter-spacing:4px}
+.terminal-line{display:flex;align-items:baseline;white-space:nowrap;min-height:108px;padding:31px 16px;color:var(--yellow);font-size:clamp(14px,1.7vw,23px)}
+.terminal-line code{font:inherit;color:inherit}.terminal-prompt{color:var(--red);margin-right:12px;font-weight:bold}.typing-cursor{color:var(--paper);font-size:1em;animation:cursor-blink 1s step-end infinite}
+.typing-toggle{display:block;background:transparent;border:0;color:#bcb9b9;padding:8px 0;margin-top:8px;font-size:11px;letter-spacing:1px}.typing-toggle:hover{color:var(--yellow)}
+.typing-paused .typing-cursor{animation:none;opacity:.55}
+@keyframes cursor-blink{50%{opacity:0}}
+@media(max-width:1000px) and (min-width:761px){.terminal-line{font-size:16px;padding-inline:10px}.terminal-prompt{margin-right:6px}}
+@media(max-width:760px){.hero h1>.hero-terminal{margin-top:20px}.terminal-line{font-size:clamp(11px,3.5vw,22px);min-height:95px;padding:28px 10px}.terminal-prompt{margin-right:6px}.terminal-bar{padding:8px 10px}}
+@media(prefers-reduced-motion:reduce){.typing-cursor{animation:none}}
