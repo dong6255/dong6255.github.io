@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>dify本地源码部署启动 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2025-12-15T03:13:00.000Z">2025.12.15</time><span>April</span></div><h1>dify本地源码部署启动</h1><a class="tag" href="/tags/Dify/"># Dify</a></section><div class="reading-grid"><article class="prose"><p>本文整理并重排了在本地从源码启动 Dify 的完整流程，覆盖后端、Worker 以及前端（建议在 WSL2 Ubuntu 中运行）三部分，并补充在 Windows 环境下的常见问题与规避建议。</p>
+<hr>
+<h2 id="概览"><a href="#概览" class="headerlink" title="概览"></a>概览</h2><ul>
+<li>后端与中间件：Windows（或 WSL2）上运行 Docker 与 Python 服务</li>
+<li>Worker：与后端同机运行（使用 Celery）</li>
+<li>前端：建议在 WSL2 Ubuntu 中构建与启动（Next.js）</li>
+</ul>
+<hr>
+<h2 id="环境准备"><a href="#环境准备" class="headerlink" title="环境准备"></a>环境准备</h2><ul>
+<li>操作系统：Windows 10&#x2F;11 或 WSL2 Ubuntu</li>
+<li>基础软件：<code>Git</code>、<code>Docker Desktop</code>（启用 WSL2 集成）、<code>Conda</code>（Python 3.12）、<code>OpenSSL</code></li>
+<li>C&#x2F;C++ 构建工具（如依赖需要编译）：Visual Studio 2022 生成工具（含 C++ 工作负载）</li>
+<li>Node.js 与包管理：<code>nvm</code>、<code>npm</code>、<code>pnpm</code></li>
+</ul>
+<hr>
+<h2 id="克隆仓库"><a href="#克隆仓库" class="headerlink" title="克隆仓库"></a>克隆仓库</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">git <span class="built_in">clone</span> https://github.com/langgenius/dify.git</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="中间件启动（Docker）"><a href="#中间件启动（Docker）" class="headerlink" title="中间件启动（Docker）"></a>中间件启动（Docker）</h2><ol>
+<li><p>进入中间件配置目录并复制示例配置：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cd</span> docker</span><br><span class="line"><span class="built_in">cp</span> middleware.env.example middleware.env</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>启动中间件容器：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker compose -f docker-compose.middleware.yaml up -d</span><br></pre></td></tr></table></figure></li>
+</ol>
+<hr>
+<h2 id="后端-API-启动（Python-uv-Flask）"><a href="#后端-API-启动（Python-uv-Flask）" class="headerlink" title="后端 API 启动（Python &#x2F; uv &#x2F; Flask）"></a>后端 API 启动（Python &#x2F; uv &#x2F; Flask）</h2><ol>
+<li><p>创建并激活 Conda 环境：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">conda create -n dify312 python=3.12</span><br><span class="line">conda activate dify312</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>进入后端目录并准备环境变量：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cd</span> api</span><br><span class="line"><span class="built_in">cp</span> .env.example .<span class="built_in">env</span></span><br></pre></td></tr></table></figure>
+</li>
+<li><p>生成并设置 Flask <code>SECRET_KEY</code>：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">openssl rand -<span class="built_in">base64</span> 42</span><br></pre></td></tr></table></figure>
+
+<p> 将生成的结果填入 <code>.env</code> 文件中的 <code>SECRET_KEY</code> 字段。</p>
+<p> 示例（截图）：</p>
+<p> <img src="/images/cnblogs/6319565ae74ac1ebfca8.png" alt="image"></p>
+</li>
+<li><p>安装 <code>uv</code> 并同步依赖：</p>
+<ul>
+<li>安装 <code>uv</code> 请参考官方文档（Windows&#x2F;WSL2 均可）。</li>
+<li>在 <code>api</code> 目录执行：</li>
+</ul>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">uv <span class="built_in">sync</span></span><br></pre></td></tr></table></figure>
+
+<p> 若安装过程中提示 C++ 构建链缺失（常见于编译型依赖），请安装 Visual Studio 2022 生成工具：</p>
+<ul>
+<li>下载地址：<a target="_blank" rel="noopener" href="https://visualstudio.microsoft.com/zh-hans/downloads/">https://visualstudio.microsoft.com/zh-hans/downloads/</a></li>
+<li>选择“生成工具”，默认安装即可。</li>
+</ul>
+<p> 参考截图：</p>
+<p> <img src="/images/cnblogs/ffdf3bf589f1d1bbd1bf.png" alt="image"><br> <img src="/images/cnblogs/a8cfb71606b8c4a8b522.png" alt="image"></p>
+</li>
+<li><p>数据库迁移与服务启动：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 迁移数据库</span></span><br><span class="line">uv run flask db upgrade</span><br><span class="line"></span><br><span class="line"><span class="comment"># 启动 API 服务</span></span><br><span class="line">uv run flask run --host 0.0.0.0 --port=5001 --debug</span><br></pre></td></tr></table></figure></li>
+</ol>
+<hr>
+<h2 id="Worker-启动（Celery）"><a href="#Worker-启动（Celery）" class="headerlink" title="Worker 启动（Celery）"></a>Worker 启动（Celery）</h2><p>在后端同环境下启动 Celery Worker：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">uv run celery -A app.celery worker -P solo --without-gossip --without-mingle -Q dataset,generation,mail,ops_trace --loglevel INFO</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="前端启动（WSL2-Ubuntu-Next-js）"><a href="#前端启动（WSL2-Ubuntu-Next-js）" class="headerlink" title="前端启动（WSL2 Ubuntu &#x2F; Next.js）"></a>前端启动（WSL2 Ubuntu &#x2F; Next.js）</h2><p>建议在 WSL2 的 Ubuntu 中准备前端环境并构建启动。</p>
+<ol>
+<li><p>安装 <code>npm</code> 并设置国内镜像：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">sudo</span> apt update &amp;&amp; <span class="built_in">sudo</span> apt install -y npm</span><br><span class="line">npm config <span class="built_in">set</span> registry https://registry.npmmirror.com</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>安装 <code>nvm</code>（国内镜像脚本示例）：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">curl -o- https://gitee.com/RubyMetric/nvm-cn/raw/main/install.sh | bash</span><br><span class="line"><span class="built_in">chmod</span> +x ~/.nvm/nvm.sh</span><br><span class="line"><span class="built_in">source</span> ~/.bashrc</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>安装 Node.js 22 并检查版本：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">nvm install 22</span><br><span class="line">node -v</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>安装 <code>pnpm</code> 并配置镜像源：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">npm install -g pnpm --registry=https://registry.npmmirror.com</span><br><span class="line">pnpm config <span class="built_in">set</span> registry https://registry.npmmirror.com/</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>进入前端目录并安装依赖、构建：</p>
+ <figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cd</span> web</span><br><span class="line">pnpm install --frozen-lockfile</span><br><span class="line">pnpm build</span><br></pre></td></tr></table></figure></li>
+</ol>
+<h3 id="关于-Windows-绝对路径构建问题（Next-js-standalone）"><a href="#关于-Windows-绝对路径构建问题（Next-js-standalone）" class="headerlink" title="关于 Windows 绝对路径构建问题（Next.js standalone）"></a>关于 Windows 绝对路径构建问题（Next.js standalone）</h3><p>在 Windows 下构建后，<code>web/.next/standalone</code> 目录可能包含带有项目绝对路径的层级（例如 <code>\github\dify_gat\dify\web</code>）。这会影响 <code>pnpm start</code> 的启动路径。</p>
+<p>可在 <code>web/package.json</code> 中调整 <code>start</code> 脚本，在拷贝目标路径前加入 <code>standalone</code> 下的完整目录层级。例如（仅供参考，需替换为你实际的绝对路径层级）：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;scripts&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">    <span class="attr">&quot;start&quot;</span><span class="punctuation">:</span> <span class="string">&quot;cp -r .next/static .next/standalone/github/dify_gat/dify/web/.next/static &amp;&amp; cp -r public .next/standalone/github/dify_gat/dify/web/public &amp;&amp; cross-env PORT=$npm_config_port HOSTNAME=$npm_config_host node .next/standalone/github/dify_gat/dify/web/server.js&quot;</span></span><br><span class="line">  <span class="punctuation">&#125;</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>示例截图：</p>
+<p><img src="/images/cnblogs/3d215fa1a072acced9cf.png" alt="image"></p>
+<p>完成上述调整后：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">pnpm dev   <span class="comment"># 启动测试环境（开发模式）</span></span><br><span class="line">pnpm start <span class="comment"># 启动正式环境（生产模式）</span></span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="常见问题与提示"><a href="#常见问题与提示" class="headerlink" title="常见问题与提示"></a>常见问题与提示</h2><ul>
+<li>C++ 构建工具缺失：<code>uv sync</code> 或某些包安装时报 C++ 相关错误，请安装 Visual Studio 2022 生成工具（含 C++ 工作负载）。</li>
+<li>Docker 未启动或端口占用：确保 Docker Desktop 运行，必要时修改中间件或 API 端口设置。</li>
+<li>WSL 路径与 Windows 路径差异：前端在 WSL 中构建，注意与 Windows 端共享目录的路径映射与权限。</li>
+<li>Next.js standalone 绝对路径：如出现绝对路径嵌套，调整 <code>package.json</code> 的 <code>start</code> 脚本指向 <code>standalone</code> 真实路径。</li>
+<li>环境变量：请根据 <code>.env.example</code> 完整配置后端所需的密钥与第三方服务参数。</li>
+</ul>
+<hr>
+<h2 id="命令速查"><a href="#命令速查" class="headerlink" title="命令速查"></a>命令速查</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 克隆仓库</span></span><br><span class="line">git <span class="built_in">clone</span> https://github.com/langgenius/dify.git</span><br><span class="line"></span><br><span class="line"><span class="comment"># 中间件</span></span><br><span class="line"><span class="built_in">cd</span> docker</span><br><span class="line"><span class="built_in">cp</span> middleware.env.example middleware.env</span><br><span class="line">docker compose -f docker-compose.middleware.yaml up -d</span><br><span class="line"></span><br><span class="line"><span class="comment"># 后端（api）</span></span><br><span class="line">conda create -n dify312 python=3.12</span><br><span class="line">conda activate dify312</span><br><span class="line"><span class="built_in">cd</span> api</span><br><span class="line"><span class="built_in">cp</span> .env.example .<span class="built_in">env</span></span><br><span class="line">openssl rand -<span class="built_in">base64</span> 42  <span class="comment"># 复制到 SECRET_KEY</span></span><br><span class="line">uv <span class="built_in">sync</span></span><br><span class="line">uv run flask db upgrade</span><br><span class="line">uv run flask run --host 0.0.0.0 --port=5001 --debug</span><br><span class="line"></span><br><span class="line"><span class="comment"># Worker</span></span><br><span class="line">uv run celery -A app.celery worker -P solo \</span><br><span class="line">  --without-gossip --without-mingle -Q dataset,generation,mail,ops_trace --loglevel INFO</span><br><span class="line"></span><br><span class="line"><span class="comment"># 前端（web，在 WSL2 Ubuntu 中）</span></span><br><span class="line"><span class="built_in">sudo</span> apt update &amp;&amp; <span class="built_in">sudo</span> apt install -y npm</span><br><span class="line">npm config <span class="built_in">set</span> registry https://registry.npmmirror.com</span><br><span class="line">curl -o- https://gitee.com/RubyMetric/nvm-cn/raw/main/install.sh | bash</span><br><span class="line"><span class="built_in">chmod</span> +x ~/.nvm/nvm.sh &amp;&amp; <span class="built_in">source</span> ~/.bashrc</span><br><span class="line">nvm install 22 &amp;&amp; node -v</span><br><span class="line">npm install -g pnpm --registry=https://registry.npmmirror.com</span><br><span class="line">pnpm config <span class="built_in">set</span> registry https://registry.npmmirror.com/</span><br><span class="line"><span class="built_in">cd</span> web</span><br><span class="line">pnpm install --frozen-lockfile</span><br><span class="line">pnpm build</span><br><span class="line">pnpm dev</span><br><span class="line">pnpm start</span><br></pre></td></tr></table></figure>
+
+<hr>
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/cnblogs-19421630/">上一篇：Dify平台运行代码节点时报错Code execution service is unavailable</a><a href="/posts/cnblogs-19326350/">下一篇：windows下docker desktop中镜像删除后磁盘空间未释放问题解决</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E6%A6%82%E8%A7%88"><span class="toc-number">1.</span> <span class="toc-text">概览</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E7%8E%AF%E5%A2%83%E5%87%86%E5%A4%87"><span class="toc-number">2.</span> <span class="toc-text">环境准备</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%8B%E9%9A%86%E4%BB%93%E5%BA%93"><span class="toc-number">3.</span> <span class="toc-text">克隆仓库</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%AD%E9%97%B4%E4%BB%B6%E5%90%AF%E5%8A%A8%EF%BC%88Docker%EF%BC%89"><span class="toc-number">4.</span> <span class="toc-text">中间件启动（Docker）</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%90%8E%E7%AB%AF-API-%E5%90%AF%E5%8A%A8%EF%BC%88Python-uv-Flask%EF%BC%89"><span class="toc-number">5.</span> <span class="toc-text">后端 API 启动（Python &#x2F; uv &#x2F; Flask）</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Worker-%E5%90%AF%E5%8A%A8%EF%BC%88Celery%EF%BC%89"><span class="toc-number">6.</span> <span class="toc-text">Worker 启动（Celery）</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%89%8D%E7%AB%AF%E5%90%AF%E5%8A%A8%EF%BC%88WSL2-Ubuntu-Next-js%EF%BC%89"><span class="toc-number">7.</span> <span class="toc-text">前端启动（WSL2 Ubuntu &#x2F; Next.js）</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%85%B3%E4%BA%8E-Windows-%E7%BB%9D%E5%AF%B9%E8%B7%AF%E5%BE%84%E6%9E%84%E5%BB%BA%E9%97%AE%E9%A2%98%EF%BC%88Next-js-standalone%EF%BC%89"><span class="toc-number">7.1.</span> <span class="toc-text">关于 Windows 绝对路径构建问题（Next.js standalone）</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%E4%B8%8E%E6%8F%90%E7%A4%BA"><span class="toc-number">8.</span> <span class="toc-text">常见问题与提示</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%91%BD%E4%BB%A4%E9%80%9F%E6%9F%A5"><span class="toc-number">9.</span> <span class="toc-text">命令速查</span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>

@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ragflow源码启动、打包镜像及问题解决 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2025-11-11T02:28:00.000Z">2025.11.11</time><span>April</span></div><h1>ragflow源码启动、打包镜像及问题解决</h1><a class="tag" href="/tags/RAGFlow/"># RAGFlow</a></section><div class="reading-grid"><article class="prose"><p>本文档整理并规范了在 WSL2 Ubuntu 22.04 环境下部署与启动 RAGFlow 的步骤，包括前端、后端与中间件，以及常见问题的处理方式。文档内容由大模型进行了重新排版。</p>
+<h2 id="环境准备"><a href="#环境准备" class="headerlink" title="环境准备"></a>环境准备</h2><ul>
+<li>操作系统：WSL2 Ubuntu 22.04</li>
+<li>Node.js：建议 <code>&gt;= 18</code>（示例使用 <code>v20.19.5</code>）</li>
+<li>Python：建议 <code>3.10</code></li>
+<li>Docker 与 docker compose：已安装并可用</li>
+</ul>
+<h2 id="拉取项目"><a href="#拉取项目" class="headerlink" title="拉取项目"></a>拉取项目</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">git <span class="built_in">clone</span> https://github.com/infiniflow/ragflow.git</span><br><span class="line"><span class="built_in">cd</span> ragflow</span><br></pre></td></tr></table></figure>
+
+<h2 id="前端启动"><a href="#前端启动" class="headerlink" title="前端启动"></a>前端启动</h2><ol>
+<li>进入前端目录并安装依赖：</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cd</span> web</span><br><span class="line">npm install</span><br></pre></td></tr></table></figure>
+
+<ol start="2">
+<li>启动开发服务：</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">npm run dev</span><br></pre></td></tr></table></figure>
+
+<h3 id="常见问题：Tailwind-生成超时"><a href="#常见问题：Tailwind-生成超时" class="headerlink" title="常见问题：Tailwind 生成超时"></a>常见问题：Tailwind 生成超时</h3><p>启动时可能出现如下错误：</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">error - [plugin: ./node_modules/@umijs/plugins/dist/tailwindcss] tailwindcss generate failed after 5 seconds, please check your tailwind.css and tailwind.config.js</span><br></pre></td></tr></table></figure>
+
+<p>处理办法：增大超时时间</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">vi ./node_modules/@umijs/plugins/dist/tailwindcss.js</span><br></pre></td></tr></table></figure>
+<p>将第 29 行的 <code>CHECK_TIMEOUT_UNIT_SECOND</code> 值调整为 <code>50</code>，保存后重新运行：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">npm run dev</span><br></pre></td></tr></table></figure>
+
+<p>（参考截图）<br><img src="/images/cnblogs/0eb2053224f053a5db35.png" alt="tailwind-timeout-1"><br><img src="/images/cnblogs/c4239a038407e04db094.png" alt="tailwind-timeout-2"><br><img src="/images/cnblogs/d1a1c979c78daf5242f2.png" alt="frontend-ok-1"><br><img src="/images/cnblogs/eff554a2cf91cbf5c78f.png" alt="frontend-ok-2"></p>
+<h2 id="中间件启动"><a href="#中间件启动" class="headerlink" title="中间件启动"></a>中间件启动</h2><p>在项目根目录下运行：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker compose -f docker/docker-compose-base.yml up -d</span><br></pre></td></tr></table></figure>
+
+<h2 id="后端启动"><a href="#后端启动" class="headerlink" title="后端启动"></a>后端启动</h2><ol>
+<li>轻量版安装依赖（使用 <code>uv</code>）：</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">uv <span class="built_in">sync</span> --python 3.10</span><br></pre></td></tr></table></figure>
+
+<ol start="2">
+<li>激活虚拟环境并设置 <code>PYTHONPATH</code>：</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">source</span> .venv/bin/activate</span><br><span class="line"><span class="built_in">export</span> PYTHONPATH=$(<span class="built_in">pwd</span>)</span><br></pre></td></tr></table></figure>
+
+<ol start="3">
+<li>若使用完整版下载模型失败，可设置镜像站点：</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">export</span> HF_ENDPOINT=https://hf-mirror.com</span><br></pre></td></tr></table></figure>
+
+<h3 id="启动任务执行器与后台服务"><a href="#启动任务执行器与后台服务" class="headerlink" title="启动任务执行器与后台服务"></a>启动任务执行器与后台服务</h3><p>在 Linux&#x2F;WSL 环境下，推荐预加载 <code>jemalloc</code> 改善内存分配性能：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">JEMALLOC_PATH=$(pkg-config --variable=libdir jemalloc)/libjemalloc.so</span><br><span class="line">LD_PRELOAD=<span class="variable">$JEMALLOC_PATH</span> python rag/svr/task_executor.py 1</span><br></pre></td></tr></table></figure>
+<ul>
+<li><code>1</code> 为执行器编号，用于区分多个并发执行器实例。</li>
+</ul>
+<p>启动后端服务：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">python api/ragflow_server.py</span><br></pre></td></tr></table></figure>
+
+<h2 id="打包镜像-不嵌入模型构建docker镜像"><a href="#打包镜像-不嵌入模型构建docker镜像" class="headerlink" title="打包镜像(不嵌入模型构建docker镜像)"></a>打包镜像(不嵌入模型构建docker镜像)</h2><ol>
+<li>进入目录</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cd</span> ragflow/</span><br></pre></td></tr></table></figure>
+<ol start="2">
+<li>执行下载脚本</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">uv run download_deps.py  --china-mirrors</span><br></pre></td></tr></table></figure>
+<ul>
+<li>加入 –china-mirrors参数可以使用国内源下载，避免超时等问题</li>
+<li>也可以尝试使用python3执行下载脚本</li>
+</ul>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">python3 download_deps.py  --china-mirrors</span><br></pre></td></tr></table></figure>
+<ol start="3">
+<li>执行依赖打包脚本</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker build -f Dockerfile.deps -t infiniflow/ragflow_deps .</span><br></pre></td></tr></table></figure>
+<ul>
+<li>执行后会生成infiniflow&#x2F;ragflow_deps镜像</li>
+</ul>
+<ol start="4">
+<li>执行主镜像打包脚本</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker build --build-arg LIGHTEN=1 --build-arg NEED_MIRROR=1 -f Dockerfile -t infiniflow/ragflow:nightly-slim_v1 .</span><br></pre></td></tr></table></figure>
+<ul>
+<li>–build-arg LIGHTEN&#x3D;1 ：构建“瘦身版”镜像开关。为减少镜像体积，跳过拷贝大体积模型，并减少可选依赖安装。</li>
+<li>–build-arg NEED_MIRROR&#x3D;1 ：开启国内镜像加速。切换 APT、pip、uv、Rustup 等到国内镜像源，加快依赖下载。</li>
+</ul>
+<ol start="5">
+<li>启动容器<br>修改.env文件，设置RAGFLOW_IMAGE&#x3D;infiniflow&#x2F;ragflow:nightly-slim_v1</li>
+</ol>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker compose -f docker/docker-compose-base.yml up -d</span><br></pre></td></tr></table></figure>
+<ul>
+<li>启动后即完成部署，可通过浏览器访问查看 RAGFlow 界面。</li>
+</ul>
+<h2 id="问题"><a href="#问题" class="headerlink" title="问题"></a>问题</h2><ol>
+<li>报错下载nltk失败<br>报错信息：</li>
+</ol>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br></pre></td><td class="code"><pre><span class="line">Resource punkt_tab not found.</span><br><span class="line">Please use the NLTK Downloader to obtain the resource:</span><br><span class="line"></span><br><span class="line">&gt;&gt;&gt; import nltk</span><br><span class="line">&gt;&gt;&gt; nltk.download(&#x27;punkt_tab&#x27;)</span><br><span class="line"></span><br><span class="line">For more information see: https://www.nltk.org/data.html</span><br><span class="line"></span><br><span class="line">Attempted to load tokenizers/punkt_tab/english/</span><br><span class="line"></span><br><span class="line">Searched in:</span><br><span class="line">  - &#x27;/root/nltk_data&#x27;</span><br><span class="line">  - &#x27;/mnt/e/workspace/github/ragflow_gat/ragflow-0.21.1/.venv/nltk_data&#x27;</span><br><span class="line">  - &#x27;/mnt/e/workspace/github/ragflow_gat/ragflow-0.21.1/.venv/share/nltk_data&#x27;</span><br><span class="line">  - &#x27;/mnt/e/workspace/github/ragflow_gat/ragflow-0.21.1/.venv/lib/nltk_data&#x27;</span><br><span class="line">  - &#x27;/usr/share/nltk_data&#x27;</span><br><span class="line">  - &#x27;/usr/local/share/nltk_data&#x27;</span><br><span class="line">  - &#x27;/usr/lib/nltk_data&#x27;</span><br><span class="line">  - &#x27;/usr/local/lib/nltk_data&#x27;</span><br></pre></td></tr></table></figure>
+<p>解决方法：<br>从其他地方下载nltk（比如其他博主提供的百度云盘资源），将文件放在上文报错信息中指定的路径下（任意一个路径即可，例如我放在了&#x2F;root下）。<br><img src="/images/cnblogs/0abf279b2d42db965124.png" alt="nltk"><br>2）uv run download_deps.py下载谷歌驱动时超时<br>解决方法：</p>
+<ul>
+<li>加入 –china-mirrors参数可以使用国内源下载，避免超时等问题</li>
+<li>也可以尝试使用python3执行下载脚本</li>
+</ul>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">python3 download_deps.py  --china-mirrors</span><br></pre></td></tr></table></figure>
+
+
+<ol start="3">
+<li>docker build构建镜像时超时<br>报错信息：</li>
+</ol>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">Dockerfile:2</span><br><span class="line">--------------------</span><br><span class="line">   1 |     # base stage</span><br><span class="line">   2 | &gt;&gt;&gt; FROM ubuntu:22.04 AS base</span><br><span class="line">   3 |     USER root</span><br><span class="line">   4 |     SHELL [&quot;/bin/bash&quot;, &quot;-c&quot;]</span><br><span class="line">--------------------</span><br><span class="line">ERROR: failed to build: failed to solve: failed to fetch anonymous token: Get &quot;https://auth.docker.io/token?scope=repository%3Alibrary%2Fubuntu%3Apull&amp;service=registry.docker.io&quot;: dial tcp 199.59.148.102:443: i/o timeout</span><br></pre></td></tr></table></figure>
+<p>解决方法：<br>挂梯子以后单独拉取ubuntu:22.04镜像后再重新执行构建</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker pull ubuntu:22.04</span><br></pre></td></tr></table></figure>
+<ol start="4">
+<li>构建镜像时报错找不到huggingface.co&#x2F;InfiniFlow&#x2F;huqie&#x2F;huqie.txt.trie<br>报错信息：</li>
+</ol>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">ERROR: failed to build: failed to solve: process &quot;/bin/bash -c cp /huggingface.co/InfiniFlow/huqie/huqie.txt.trie /ragflow/rag/res/ &amp;&amp;     tar --exclude=&#x27;.*&#x27; -cf -         /huggingface.co/InfiniFlow/text_concat_xgb_v1.0         /huggingface.co/InfiniFlow/deepdoc         | tar -xf - --strip-components=3 -C /ragflow/rag/res/deepdoc&quot; did not complete successfully: exit code: 1</span><br></pre></td></tr></table></figure>
+<p>解决方法：重新执行download_deps.py脚本</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">uv run download_deps.py  --china-mirrors</span><br></pre></td></tr></table></figure>
+
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/cnblogs-19326350/">上一篇：windows下docker desktop中镜像删除后磁盘空间未释放问题解决</a><a href="/posts/cnblogs-18829087/">下一篇：使用PyMuPDF对pdf文件插入文字时 遇到配置本地的字体文件却仍然使用默认Helvetica字体问题</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E7%8E%AF%E5%A2%83%E5%87%86%E5%A4%87"><span class="toc-number">1.</span> <span class="toc-text">环境准备</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E6%8B%89%E5%8F%96%E9%A1%B9%E7%9B%AE"><span class="toc-number">2.</span> <span class="toc-text">拉取项目</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%89%8D%E7%AB%AF%E5%90%AF%E5%8A%A8"><span class="toc-number">3.</span> <span class="toc-text">前端启动</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%B8%B8%E8%A7%81%E9%97%AE%E9%A2%98%EF%BC%9ATailwind-%E7%94%9F%E6%88%90%E8%B6%85%E6%97%B6"><span class="toc-number">3.1.</span> <span class="toc-text">常见问题：Tailwind 生成超时</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%AD%E9%97%B4%E4%BB%B6%E5%90%AF%E5%8A%A8"><span class="toc-number">4.</span> <span class="toc-text">中间件启动</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%90%8E%E7%AB%AF%E5%90%AF%E5%8A%A8"><span class="toc-number">5.</span> <span class="toc-text">后端启动</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%90%AF%E5%8A%A8%E4%BB%BB%E5%8A%A1%E6%89%A7%E8%A1%8C%E5%99%A8%E4%B8%8E%E5%90%8E%E5%8F%B0%E6%9C%8D%E5%8A%A1"><span class="toc-number">5.1.</span> <span class="toc-text">启动任务执行器与后台服务</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E6%89%93%E5%8C%85%E9%95%9C%E5%83%8F-%E4%B8%8D%E5%B5%8C%E5%85%A5%E6%A8%A1%E5%9E%8B%E6%9E%84%E5%BB%BAdocker%E9%95%9C%E5%83%8F"><span class="toc-number">6.</span> <span class="toc-text">打包镜像(不嵌入模型构建docker镜像)</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E9%97%AE%E9%A2%98"><span class="toc-number">7.</span> <span class="toc-text">问题</span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>

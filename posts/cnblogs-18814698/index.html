@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>记录-内网部署vllm分布式推理DeepSeekR1:70b | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2025-04-08T06:48:00.000Z">2025.04.08</time><span>April</span></div><h1>记录-内网部署vllm分布式推理DeepSeekR1:70b</h1><a class="tag" href="/tags/DeepSeek/"># DeepSeek</a><a class="tag" href="/tags/vLLM/"># vLLM</a></section><div class="reading-grid"><article class="prose"><p>##背景<br>前段时间接到需求要在内网部署DeepSeekR1:70b，由于手里的服务器和显卡比较差（四台 四块Tesla T4- 16g显存的服务器），先后尝试了ollama、vllm、llamacpp等，最后选择用vllm的分布式推理来部署。</p>
+<p>##需要准备的资源</p>
+<ol>
+<li>vllm的docker镜像（可以从docker hub 下载，使用docker save -o命令保存拿到内网服务器中）</li>
+<li>run_cluster.sh脚本（用来启动docker镜像和进行ray通信，下面会贴上我目前在用的版本）</li>
+<li>模型文件（huggingface下载，国内可以用hf-mirror镜像站），需要下载到所有分布式机器的磁盘中，最好保持存储路径一致。</li>
+<li>nvidia驱动、cuda等是必备的，不提了</li>
+</ol>
+<p>##部署过程</p>
+<ol>
+<li><p>载入vllm的docker镜像<br>docker load -i vllm.tar</p>
+</li>
+<li><p>编写脚本vi run_cluster.sh<br>所有机器都使用如下脚本</p>
+</li>
+</ol>
+<details>
+<summary>点击查看代码</summary>
+
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br></pre></td><td class="code"><pre><span class="line">``#!/bin/bash</span><br><span class="line"></span><br><span class="line"># Check for minimum number of required arguments</span><br><span class="line">if [ $# -lt 4 ]; then</span><br><span class="line">    echo &quot;Usage: $0 docker_image head_node_address --head|--worker path_to_hf_home [additional_args...]&quot;</span><br><span class="line">    exit 1</span><br><span class="line">fi</span><br><span class="line"></span><br><span class="line">DOCKER_IMAGE=&quot;$1&quot;</span><br><span class="line">HEAD_NODE_ADDRESS=&quot;$2&quot;</span><br><span class="line">NODE_TYPE=&quot;$3&quot;  # Should be --head or --worker</span><br><span class="line">PATH_TO_HF_HOME=&quot;$4&quot;</span><br><span class="line">shift 4</span><br><span class="line"></span><br><span class="line"># Additional arguments are passed directly to the Docker command</span><br><span class="line">ADDITIONAL_ARGS=(&quot;$@&quot;)</span><br><span class="line"></span><br><span class="line"># Validate node type</span><br><span class="line">if [ &quot;$&#123;NODE_TYPE&#125;&quot; != &quot;--head&quot; ] &amp;&amp; [ &quot;$&#123;NODE_TYPE&#125;&quot; != &quot;--worker&quot; ]; then</span><br><span class="line">    echo &quot;Error: Node type must be --head or --worker&quot;</span><br><span class="line">    exit 1</span><br><span class="line">fi</span><br><span class="line"></span><br><span class="line"># Define a function to cleanup on EXIT signal</span><br><span class="line">cleanup() &#123;</span><br><span class="line">    docker stop node</span><br><span class="line">    docker rm node</span><br><span class="line">&#125;</span><br><span class="line">trap cleanup EXIT</span><br><span class="line"></span><br><span class="line"># Command setup for head or worker node</span><br><span class="line">RAY_START_CMD=&quot;ray start --block&quot;</span><br><span class="line">if [ &quot;$&#123;NODE_TYPE&#125;&quot; == &quot;--head&quot; ]; then</span><br><span class="line">    RAY_START_CMD+=&quot; --head --port=6379&quot;</span><br><span class="line">else</span><br><span class="line">    RAY_START_CMD+=&quot; --address=$&#123;HEAD_NODE_ADDRESS&#125;:6379&quot;</span><br><span class="line">fi</span><br><span class="line"></span><br><span class="line"># Run the docker command with the user specified parameters and additional arguments</span><br><span class="line">#docker run \</span><br><span class="line">   # -d \</span><br><span class="line">    #   --entrypoint /bin/bash \</span><br><span class="line"></span><br><span class="line">docker run \</span><br><span class="line">    --entrypoint /bin/bash \</span><br><span class="line">    --network host \</span><br><span class="line">    --name node \</span><br><span class="line">    --shm-size 10.24g \</span><br><span class="line">    --gpus all \</span><br><span class="line">    -v &quot;$&#123;PATH_TO_HF_HOME&#125;:/root/.cache/huggingface&quot; \</span><br><span class="line">    &quot;$&#123;ADDITIONAL_ARGS[@]&#125;&quot; \</span><br><span class="line">    &quot;$&#123;DOCKER_IMAGE&#125;&quot; -c &quot;$&#123;RAY_START_CMD&#125;&quot;</span><br></pre></td></tr></table></figure>
+</details>
+
+
+<ol start="3">
+<li><p>查看网卡信息<br>  输入ip a<br>  找到这台机器对应的编号，用在之后的启动命令中<br><img src="/images/cnblogs/076101e432a3c60d324d.png"></p>
+</li>
+<li><p>启动脚本（每台机器都需要启动，选择任意一台为主节点，其他为工作节点）<br>启动命令：（ –head为主机  –worker为其他机器使用，命令中的ip都需要填写主机的ip）<br><strong>主机脚本</strong> bash run_cluster.sh    vllm&#x2F;vllm-openai:v0.6.4.post1  主机ip –head &#x2F;data&#x2F;vllm_model -v &#x2F;data&#x2F;vllm_model&#x2F;:&#x2F;model&#x2F; -e GLOO_SOCKET_IFNAME&#x3D;ens13f0 -e NCCL_SOCKET_IFNAME&#x3D;ens13f0<br><strong>工作机脚本</strong> bash run_cluster.sh    vllm&#x2F;vllm-openai:v0.6.4.post1  主机ip –worker &#x2F;data&#x2F;vllm_model -v &#x2F;data&#x2F;vllm_model&#x2F;:&#x2F;model&#x2F; -e GLOO_SOCKET_IFNAME&#x3D;ens13f0 -e NCCL_SOCKET_IFNAME&#x3D;ens13f0<br><strong>后台运行</strong> 也可以通过nohup后台运行，如：nohup bash run_cluster.sh    vllm&#x2F;vllm-openai:v0.6.4.post1  主机ip –worker &#x2F;data&#x2F;vllm_model -v &#x2F;data&#x2F;vllm_model&#x2F;:&#x2F;model&#x2F; -e GLOO_SOCKET_IFNAME&#x3D;ens13f0 -e NCCL_SOCKET_IFNAME&#x3D;ens13f0 &gt;&#x2F;ray_file 2&gt;&amp;1 &amp;</p>
+</li>
+</ol>
+<p>&#x2F;data&#x2F;vllm_model为你模型文件的位置，如下图则启动成功<br><img src="/images/cnblogs/b085d6d819a23823559b.png"></p>
+<ol start="5">
+<li><p>所有都成功启动后可以使用任何一台机器的ssh会话，因为已经通信，所以哪台机器都可以启动vllm。注意不要关闭任何一台机器的run_cluster启动的页面，<br>使用docker ps 查看运行的镜像<br>进入镜像内部<br>输入docker exec -it 镜像号 &#x2F;bin&#x2F;bash进入<br>输入ray status可以查看当前通信状态<br><img src="/images/cnblogs/592bb28e3cdbfd866f63.png"></p>
+</li>
+<li><p>直接在docker中启动vllm<br>命令：vllm serve &#x2F;model&#x2F;DeepSeek-R1-Distill-Llama-70B     –tensor-parallel-size 4     –pipeline-parallel-size 4    –dtype&#x3D;float16</p>
+</li>
+</ol>
+<p>注：我的vllm运行命令中tensor-parallel对应每台服务器的gpu数，pipeline-parallel-size对应服务器数，–dtype&#x3D;float16这个由于Tesla T4计算精度的问题需要添加这个配置降低模型的精度，如果显卡计算能力8.0以上可以不加这个配置。关于分布式并行的参数这里博主没有深究含义，如果有更好的使用方式也可以交流下。</p>
+<p>##参数含义<br>🔹 –tensor-parallel-size<br>这个参数表示 张量并行（Tensor Parallelism） 的规模。</p>
+<p>将一个神经网络的 权重矩阵 切分到多个 GPU 上。</p>
+<p>通常用于切分 Transformer 中的 attention 或 FFN 层的权重。</p>
+<p>例如设置为 4，意味着一个 attention 层的计算会被分成 4 份，在 4 个 GPU 上并行进行。</p>
+<p>适用于具有较大权重矩阵的模型，如 LLaMA、GPT 等，能充分利用多个 GPU 的显存和计算资源。</p>
+<p>🔹 –pipeline-parallel-size<br>这个参数表示 流水线并行（Pipeline Parallelism） 的规模。</p>
+<p>将整个模型的 不同层 分配到不同的 GPU 上，形成一个“流水线”。</p>
+<p>每个 GPU 处理模型的一部分，然后把结果传给下一个 GPU。</p>
+<p>设置为 2 表示模型被分成 2 段，分别在两个 GPU 上依次运行。</p>
+<p>适用于模型层数较多时进一步扩展模型到更多 GPU 上。</p>
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/cnblogs-18818351/">上一篇：ocr识别遇到的小问题-图片的EXIF 元数据</a><a href="/posts/cnblogs-18814581/">下一篇：springboot和jdk的版本对应关系</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>

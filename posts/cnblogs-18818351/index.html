@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ocr识别遇到的小问题-图片的EXIF 元数据 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2025-04-10T06:10:00.000Z">2025.04.10</time><span>April</span></div><h1>ocr识别遇到的小问题-图片的EXIF 元数据</h1><a class="tag" href="/tags/OCR/"># OCR</a></section><div class="reading-grid"><article class="prose"><h2 id="背景"><a href="#背景" class="headerlink" title="背景"></a>背景</h2><p>&emsp; 之前在公司通过paddleocr写了个接口，传入图片的base64编码返回识别出的文字信息。但是图片为横向时，文字行会乱序，所以准备新加一个功能通过paddleclas推理图片文字的倾斜角度，并将图片旋转为正向。在测试过程中发现windows打开一个正向图片，调用ocr接口时无法识别，返回一堆奇怪的文字。</p>
+<h2 id="排查过程"><a href="#排查过程" class="headerlink" title="排查过程"></a>排查过程</h2><p>&emsp; 首先我需要识别的图片在windows中打开是这样的，宽为4096，长为3072<br><img src="/images/cnblogs/76c600ca3eabce7bf641.jpg"><br><br><br>&emsp; 识别出的结果为<br><img src="/images/cnblogs/05752c83ac21cdfba662.jpg"><br>（图片内容为示例图片，实际是纯文字图片，返回的内容都是奇怪的文字）<br><br><br>&emsp; 之后尝试了其他正向图片都可以正常识别，于是在PyCharm中打算通过python打开图片，然后使用本地的paddleocr尝试一下。使用如下代码：<br> <figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">with open(&quot;C:\\Users\\xxxxx\\test.jpg&quot;, &quot;rb&quot;) as image_file:</span><br><span class="line">     file_content = base64.b64encode(image_file.read()).decode(&quot;utf8&quot;)</span><br></pre></td></tr></table></figure><br>&emsp; 发现预览图片时，图片是旋转的，于是将图片复制到pycharm和idea里，发现全部都是旋转的图片。<br><img src="/images/cnblogs/5316face7d641ae0909e.jpg"><br>&emsp; 并且发现只有jpg格式的出现了这个问题，其他如PNG格式的图片是正常的。<br><br><br>&emsp; 于是搜索了一下jpg和PNG图片的不同之处。发现JPEG 图片通常包含 EXIF 元数据，里面包括了一个 Orientation 标签，它告诉系统应该如何旋转图片来正常显示。</p>
+<ul>
+<li><p>Windows 的照片查看器会读取这个 Orientation 标签，并自动旋转图片。</p>
+</li>
+<li><p>但一些 IDE（如 PyCharm、IDEA）中的图片查看器或第三方库（如 PIL、OpenCV）通常不读取 EXIF 的 Orientation 信息，而是直接以图像的原始像素排列进行显示。</p>
+</li>
+</ul>
+<p>&emsp; 那么问题就很明显了，使用如下代码对图片的EXIF信息进行读取</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br></pre></td><td class="code"><pre><span class="line">from PIL import Image, ExifTags</span><br><span class="line"></span><br><span class="line">def open_image_with_correct_orientation(path):</span><br><span class="line">    image = Image.open(path)</span><br><span class="line"></span><br><span class="line">    try:</span><br><span class="line">        for orientation in ExifTags.TAGS.keys():</span><br><span class="line">            if ExifTags.TAGS[orientation] == &#x27;Orientation&#x27;:</span><br><span class="line">                break</span><br><span class="line"></span><br><span class="line">        exif = image._getexif()</span><br><span class="line">        if exif is not None:</span><br><span class="line">            orientation_value = exif.get(orientation)</span><br><span class="line"></span><br><span class="line">            if orientation_value == 3:</span><br><span class="line">                image = image.rotate(180, expand=True)</span><br><span class="line">            elif orientation_value == 6:</span><br><span class="line">                image = image.rotate(270, expand=True)</span><br><span class="line">            elif orientation_value == 8:</span><br><span class="line">                image = image.rotate(90, expand=True)</span><br><span class="line">    except Exception as e:</span><br><span class="line">        print(f&quot;读取 EXIF 方向失败: &#123;e&#125;&quot;)</span><br><span class="line"></span><br><span class="line">    return image</span><br><span class="line"></span><br><span class="line"># 示例使用</span><br><span class="line">img = open_image_with_correct_orientation(&quot;your_image.jpg&quot;)</span><br><span class="line">img.show()</span><br></pre></td></tr></table></figure>
+<p>&emsp; 返回结果为<br><img src="/images/cnblogs/6bcdba90115e900e63e1.jpg"><br>&emsp; 发现Orientation 为3，证明原始图片确实是旋转过的。</p>
+<h2 id="解决办法"><a href="#解决办法" class="headerlink" title="解决办法"></a>解决办法</h2><p>1、通过上述代码获取图片的元数据的旋转信息，对图片进行旋转<br>2、通过paddleclas判断文字的倾斜角度，对图片进行旋转，我这边采用的是这种方法，毕竟这次遇到的bug是因为测试为了方便直接对图片进行旋转并保存而出现。线上环境中图片由于每个人拍摄角度不固定，所以很可能上传的原始图片就是倾倒的。</p>
+<h2 id="图片的EXIF元数据"><a href="#图片的EXIF元数据" class="headerlink" title="图片的EXIF元数据"></a>图片的EXIF元数据</h2><p><strong>常见关键字段：</strong></p>
+<ul>
+<li><p>Orientation：图像方向（是否旋转）</p>
+</li>
+<li><p>DateTime：拍摄时间</p>
+</li>
+<li><p>Make &#x2F; Model：设备品牌 &#x2F; 型号</p>
+</li>
+<li><p>ExifImageWidth &#x2F; ExifImageHeight：原始像素尺寸</p>
+</li>
+<li><p>GPSInfo：地理位置信息（如果有）</p>
+</li>
+</ul>
+<br>
+
+<p><strong>Orientation 的取值含义：</strong></p>
+<table>
+<thead>
+<tr>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>正常</td>
+</tr>
+<tr>
+<td>3</td>
+<td>旋转 180 度</td>
+</tr>
+<tr>
+<td>6</td>
+<td>顺时针旋转 90 度</td>
+</tr>
+<tr>
+<td>8</td>
+<td>逆时针旋转 90 度</td>
+</tr>
+</tbody></table>
+<p><strong>常见支持 EXIF 的图片格式</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>值</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>JPEG &#x2F; JPG</td>
+<td>✅ 是主要支持 EXIF 的格式</td>
+</tr>
+<tr>
+<td>TIFF</td>
+<td>✅ 原始格式之一，支持丰富的元信息</td>
+</tr>
+<tr>
+<td>HEIF &#x2F; HEIC</td>
+<td>✅ 新一代图像格式（如 iPhone 拍照），支持 EXIF，但不是所有工具都能读取</td>
+</tr>
+<tr>
+<td>WebP</td>
+<td>✅ 支持嵌入元数据（EXIF 和 XMP），但不是标准实现的一部分，兼容性差异较大</td>
+</tr>
+<tr>
+<td>RAW 格式（如 .CR2, .NEF, .ARW, .DNG 等）</td>
+<td>✅ 摄影相机原始文件，通常包含大量 EXIF 和其他元数据</td>
+</tr>
+<tr>
+<td>PNG</td>
+<td>❌ 不支持 EXIF，但可以写入其他形式的元数据（如 tEXt 或 iTXt）</td>
+</tr>
+<tr>
+<td>BMP</td>
+<td>❌ 不支持 EXIF</td>
+</tr>
+<tr>
+<td>GIF</td>
+<td>❌ 不支持 EXIF</td>
+</tr>
+<tr>
+<td>SVG</td>
+<td>❌ 是 XML 文本格式，不支持 EXIF，但可以有自定义 metadata 区域</td>
+</tr>
+</tbody></table>
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/cnblogs-18829087/">上一篇：使用PyMuPDF对pdf文件插入文字时 遇到配置本地的字体文件却仍然使用默认Helvetica字体问题</a><a href="/posts/cnblogs-18814698/">下一篇：记录-内网部署vllm分布式推理DeepSeekR1:70b</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E8%83%8C%E6%99%AF"><span class="toc-number">1.</span> <span class="toc-text">背景</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E6%8E%92%E6%9F%A5%E8%BF%87%E7%A8%8B"><span class="toc-number">2.</span> <span class="toc-text">排查过程</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E8%A7%A3%E5%86%B3%E5%8A%9E%E6%B3%95"><span class="toc-number">3.</span> <span class="toc-text">解决办法</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%9B%BE%E7%89%87%E7%9A%84EXIF%E5%85%83%E6%95%B0%E6%8D%AE"><span class="toc-number">4.</span> <span class="toc-text">图片的EXIF元数据</span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>

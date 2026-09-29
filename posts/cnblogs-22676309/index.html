@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>DeepSeek Harness 服务化改造实践 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2026-08-25T06:34:00.000Z">2026.08.25</time><span>April</span></div><h1>DeepSeek Harness 服务化改造实践</h1><a class="tag" href="/tags/DeepSeek/"># DeepSeek</a></section><div class="reading-grid"><article class="prose"><blockquote>
+<p>摘要：DeepSeek Harness 原本更接近面向个人的开发工具。为了让团队成员只通过浏览器就能使用，同时保证账号、模型配置、会话和文件彼此隔离，我们在它前面增加了一层零依赖 Node.js 网关，并用 Docker 为每个用户运行独立实例。本文记录整个改造的架构、关键实现、踩坑过程与安全取舍。</p>
+</blockquote>
+<h2 id="一、为什么要做这次改造"><a href="#一、为什么要做这次改造" class="headerlink" title="一、为什么要做这次改造"></a>一、为什么要做这次改造</h2><p>直接把一个本地 AI Agent 工具暴露到服务器上并不难，真正困难的是把它变成一个可供多人长期使用的服务。</p>
+<p>我们希望最终的使用方式足够简单：用户打开浏览器，登录自己的账号，进入独立工作区，选择平台统一提供的模型或添加自己的模型配置，完成任务后直接下载生成的文件。用户电脑上不需要安装 Node.js、Python、Docker，也不需要了解服务器目录结构。</p>
+<p>这意味着改造不能只解决“页面能打开”，还必须同时处理下面几个问题：</p>
+<ol>
+<li>多个用户如何认证，并被准确路由到各自的 DSH 实例？</li>
+<li>用户会话、API Key、模型设置和生成文件如何避免串数据？</li>
+<li>DSH 的部分特权接口只信任回环地址，经过公网反向代理后如何继续工作？</li>
+<li>平台统一模型与用户自定义模型如何共存？</li>
+<li>Agent 生成的文件怎样方便地交付给浏览器用户？</li>
+<li>在受限或离线环境中，怎样让容器开箱即用？</li>
+</ol>
+<p>我们的核心原则是：<strong>共享入口，不共享运行时；统一运维，不牺牲用户数据边界。</strong></p>
+<h2 id="二、目标架构"><a href="#二、目标架构" class="headerlink" title="二、目标架构"></a>二、目标架构</h2><p>最终架构由四层组成：TLS 反向代理、认证网关、用户实例和持久化数据卷。</p>
+<figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">flowchart LR</span><br><span class="line">    U[&quot;浏览器用户&quot;] --&gt;|HTTPS| N[&quot;Nginx / OpenResty&quot;]</span><br><span class="line">    N --&gt; G[&quot;DSH Gateway&quot;]</span><br><span class="line">    G --&gt;|认证后按用户路由| A[&quot;用户 A 的 DSH 实例&quot;]</span><br><span class="line">    G --&gt;|认证后按用户路由| B[&quot;用户 B 的 DSH 实例&quot;]</span><br><span class="line">    G --&gt;|Admin API| D[&quot;Docker Engine&quot;]</span><br><span class="line">    G --&gt; GV[&quot;共享命名卷的管理视图&quot;]</span><br><span class="line">    A --&gt; AV[&quot;仅挂载用户 A 子目录&quot;]</span><br><span class="line">    B --&gt; BV[&quot;仅挂载用户 B 子目录&quot;]</span><br></pre></td></tr></table></figure>
+
+<p>公网只暴露 HTTPS 入口。网关负责登录、会话、CSRF、限流、反向代理、用户管理和文件交付；每个用户拥有独立的 DSH 进程、端口和数据目录。Docker 是推荐部署方式，同时保留 systemd 方案，方便已有环境平滑迁移。</p>
+<h2 id="三、第一步：在-DSH-前增加认证与路由网关"><a href="#三、第一步：在-DSH-前增加认证与路由网关" class="headerlink" title="三、第一步：在 DSH 前增加认证与路由网关"></a>三、第一步：在 DSH 前增加认证与路由网关</h2><p>网关使用 Node.js 标准库实现，不额外引入 Web 框架。这样做不是为了追求代码最少，而是为了让镜像依赖和部署链路保持可控。</p>
+<p>登录链路包含以下防护：</p>
+<ul>
+<li>密码使用 scrypt 保存，并兼容旧版 APR1 记录；</li>
+<li>会话由 HMAC 签名，Cookie 设置 <code>HttpOnly</code>、<code>Secure</code> 和 <code>SameSite=Lax</code>；</li>
+<li>登录表单采用双提交 Cookie 进行 CSRF 校验；</li>
+<li>失败登录同时按 IP 和账号限流；</li>
+<li>未登录的普通页面跳转登录页，API 请求直接返回 401。</li>
+</ul>
+<p>用户登录成功后，会话中只保存经过签名的用户标识和过期时间。网关根据用户记录找到对应端口，再把 HTTP 和 WebSocket 流量转发到该用户实例。</p>
+<p>这里有一个容易忽略的兼容问题：DSH 的 settings、credentials、agent preset 等接口对来源和 Host 有严格判断。如果把浏览器传来的公网 Host 原样转发，页面能打开，但某些设置操作会失败。</p>
+<p>解决方式是在可信网关内部重写上游请求：</p>
+<ul>
+<li>上游 Host 固定为 DSH 信任的回环地址；</li>
+<li>去掉不应从浏览器透传的信任标记；</li>
+<li>对外仍然只开放网关，不直接暴露用户实例端口。</li>
+</ul>
+<p>本质上，网关承担了“公网身份边界”和“内部可信调用方”两种角色。</p>
+<h2 id="四、第二步：从共享实例改成每用户独立容器"><a href="#四、第二步：从共享实例改成每用户独立容器" class="headerlink" title="四、第二步：从共享实例改成每用户独立容器"></a>四、第二步：从共享实例改成每用户独立容器</h2><p>仅在应用层给请求附加用户名，并不足以隔离一个具备文件读写和命令执行能力的 Agent。我们的方案是为每个用户创建独立 DSH 容器：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">dsh-gateway</span><br><span class="line">dsh-web-alice</span><br><span class="line">dsh-web-bob</span><br><span class="line">dsh-web-charlie</span><br></pre></td></tr></table></figure>
+
+<p>网关提供带 Bearer Token 的 Admin API，用于创建、查看、启动、停止、重启和删除用户；<code>dsh-users.sh</code> 再把 HTTP API 包装成运维命令。用户记录保存在 <code>users.json</code>，包含端口、家目录、密码哈希和 Key 配置状态。</p>
+<h3 id="4-1-为什么采用“一镜像、两角色”"><a href="#4-1-为什么采用“一镜像、两角色”" class="headerlink" title="4.1 为什么采用“一镜像、两角色”"></a>4.1 为什么采用“一镜像、两角色”</h3><p>同一个镜像通过 <code>ROLE</code> 环境变量承担两种职责：</p>
+<ul>
+<li><code>ROLE=gateway</code>：启动认证网关；</li>
+<li><code>ROLE=user</code>：启动指定用户的 DSH Web 实例。</li>
+</ul>
+<p>这样可以避免维护两套基础环境。升级 DSH、Python 依赖或文件助手后，只需构建一个镜像，再按需重建用户容器。</p>
+<h3 id="4-2-DSH-必须绑定回环地址带来的网络问题"><a href="#4-2-DSH-必须绑定回环地址带来的网络问题" class="headerlink" title="4.2 DSH 必须绑定回环地址带来的网络问题"></a>4.2 DSH 必须绑定回环地址带来的网络问题</h3><p>DSH 为避免误暴露高权限能力，会拒绝直接绑定 <code>0.0.0.0</code>。如果网关和用户实例位于普通 bridge 网络的不同容器中，网关又无法访问用户容器内部的 <code>127.0.0.1</code>。</p>
+<p>我们最终让用户容器加入网关容器的网络命名空间：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">docker run \</span><br><span class="line">  --network container:dsh-gateway \</span><br><span class="line">  -e ROLE=user \</span><br><span class="line">  -e DSH_PORT=3101 \</span><br><span class="line">  ...</span><br></pre></td></tr></table></figure>
+
+<p>每个用户实例仍然监听 <code>127.0.0.1</code>，但网关可以通过共享的回环网络访问它。不同用户使用 3101、3102 等不同端口避免冲突。</p>
+<p>这个设计也带来明确的运维约束：重建网关后，旧用户容器仍引用原来的网络命名空间，不能只执行 <code>docker restart</code>。正确做法是删除并重新创建用户容器。批量脚本只重建当前运行中的用户，原本停止的账号保持停止状态。</p>
+<h2 id="五、第三步：把“有持久化”升级成“有隔离的持久化”"><a href="#五、第三步：把“有持久化”升级成“有隔离的持久化”" class="headerlink" title="五、第三步：把“有持久化”升级成“有隔离的持久化”"></a>五、第三步：把“有持久化”升级成“有隔离的持久化”</h2><p>早期方案让网关和所有用户容器挂载同一个完整数据卷。数据确实不会随容器删除而丢失，但任意用户容器都能遍历其他用户目录，这只是持久化，不是隔离。</p>
+<p>改造后，网关仍挂载完整命名卷，负责用户生命周期管理；用户容器只挂载自己的子目录：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">dsh-gateway-data</span><br><span class="line">└── users</span><br><span class="line">    ├── alice    ← 只挂载给 alice</span><br><span class="line">    ├── bob      ← 只挂载给 bob</span><br><span class="line">    └── charlie  ← 只挂载给 charlie</span><br></pre></td></tr></table></figure>
+
+<p>容器创建时使用 volume subpath，把 <code>users/alice</code> 单独挂载到 Alice 的 <code>DSH_HOME</code>。因此即使 Agent 在容器内遍历挂载点，也无法看到兄弟目录。</p>
+<p>同时，入口脚本必须显式导出：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">export</span> DSH_HOME=/data/users/alice</span><br><span class="line"><span class="built_in">export</span> HOME=/data/users/alice</span><br></pre></td></tr></table></figure>
+
+<p>我们曾经遇到一个很典型的问题：数据卷挂载正确，但 DSH 仍按容器默认 HOME 把文件写到 <code>/root/workspace</code>，而文件交付页面读取的是 <code>/data/users/alice/workspace</code>。结果是 Agent 明明生成了文件，用户却看不到。把 <code>DSH_HOME</code> 和 <code>HOME</code> 同时钉到用户目录后，运行时与交付视图才真正一致。</p>
+<p>对于 legacy&#x2F;systemd 模式，则由独立 OS 账号、0700 家目录和 sudoers 白名单助手提供类似边界。两种模式沿用相同的用户数据结构，降低迁移成本。</p>
+<h2 id="六、第四步：重新设计模型-Provider-管理"><a href="#六、第四步：重新设计模型-Provider-管理" class="headerlink" title="六、第四步：重新设计模型 Provider 管理"></a>六、第四步：重新设计模型 Provider 管理</h2><p>模型配置是这次改造中反复调整最多的部分。</p>
+<p>最初的思路是设置 Provider 白名单：普通用户只能看到平台配置的两个 Provider，其他 Provider 在网关响应中被过滤；用户提交非白名单 Provider 时，网关直接返回 403。这种做法控制力强，但有两个明显问题：</p>
+<ol>
+<li>它把“界面精简”变成了“能力封锁”；</li>
+<li>用户明明拥有独立容器和独立配置文件，却无法维护自己的 Provider。</li>
+</ol>
+<p>最终我们把模型配置拆成两个层次：</p>
+<ul>
+<li><strong>系统托管 Provider</strong>：由运维人员通过环境变量统一配置，在每次用户容器启动时同步；</li>
+<li><strong>用户自定义 Provider</strong>：保存在用户自己的 <code>settings.yaml</code> 中，网关不阻止读写，也不会与其他用户共享。</li>
+</ul>
+<p>系统配置采用模板渲染和 YAML 结构化合并，而不是简单追加文本：</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">for</span> (<span class="keyword">const</span> id <span class="keyword">of</span> <span class="title class_">Object</span>.<span class="title function_">keys</span>(templateProviders)) &#123;</span><br><span class="line">  current[<span class="string">&#x27;llm-pi-ai&#x27;</span>].<span class="property">providers</span>[id] = templateProviders[id];</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>这段逻辑有三个重要性质：</p>
+<ul>
+<li>幂等：重复启动不会生成重复配置；</li>
+<li>有界覆盖：只覆盖模板中由系统托管的同名 Provider；</li>
+<li>保留用户配置：模板之外的 Provider 原样保留。</li>
+</ul>
+<p>采用结构化合并还解决了一个实际故障：直接向 YAML 末尾追加配置可能产生重复的 <code>llm-pi-ai</code> 键，<code>js-yaml</code> 会报 duplicate-key，最终导致整个 settings 文件加载失败。</p>
+<p>对于 DSH 自带但平台暂时不想展示的 Provider，我们只在列表和设置查询响应中做“展示隐藏”，不拦截用户写入。也就是说，<code>DSH_HIDDEN_PROVIDERS</code> 是 UI 降噪开关，不是安全策略。真正的数据隔离依赖的是独立实例和独立目录，而不是对 JSON 响应做字符串过滤。</p>
+<p>默认模型也采用温和迁移策略：仅当用户尚未设置默认模型，或仍使用旧版默认值时，才切换到新的系统默认模型，避免覆盖用户已经做出的选择。</p>
+<h2 id="七、第五步：让-Agent-生成的文件真正可交付"><a href="#七、第五步：让-Agent-生成的文件真正可交付" class="headerlink" title="七、第五步：让 Agent 生成的文件真正可交付"></a>七、第五步：让 Agent 生成的文件真正可交付</h2><p>AI Agent 的价值经常落在最终产物上，例如 Excel、Word、PDF、图片或代码压缩包。如果用户还要登录服务器、寻找工作目录并用 SCP 下载，Web 化只完成了一半。</p>
+<p>因此我们在 DSH 页面中注入了“交付文件”和“上传文件”入口，并通过同源抽屉提供：</p>
+<ul>
+<li>目录浏览；</li>
+<li>中文文件名下载；</li>
+<li>多文件上传；</li>
+<li>默认 100 MB 的单次上传限制；</li>
+<li>自动定位当前会话工作目录。</li>
+</ul>
+<p>自动定位并不是靠猜。网关会观察 <code>session.history</code> 与 <code>session.list</code> 的代理响应，关联当前会话及其 cwd，并把最后一次有效目录持久化。用户打开文件抽屉时，优先展示当前对话的工作目录；目录失效时再回退到 workspace。</p>
+<p>文件接口还必须防止路径穿越。实现中同时检查用户 home 与目标路径的 realpath，拒绝越界路径，并禁止下载隐藏文件，尤其是 <code>.credentials.yaml</code>。Docker 模式下，助手运行在网关容器中；legacy 模式则通过固定路径的 sudoers 白名单执行，网关进程本身不直接获得用户目录的任意访问权。</p>
+<h2 id="八、第六步：把常用工具链做进镜像"><a href="#八、第六步：把常用工具链做进镜像" class="headerlink" title="八、第六步：把常用工具链做进镜像"></a>八、第六步：把常用工具链做进镜像</h2><p>一个能聊天的 Agent 和一个能完成工作的 Agent，差别往往在运行环境。</p>
+<p>我们在镜像中预装了几类常用能力：</p>
+<ul>
+<li>Python Web 与脚本工具：FastAPI、HTTP 客户端、Pydantic；</li>
+<li>数据处理：NumPy、Pandas、SQLAlchemy；</li>
+<li>Office 与文档：openpyxl、python-docx、python-pptx、PyMuPDF、pypdf；</li>
+<li>图片处理：Pillow、OpenCV；</li>
+<li>对象存储和向量数据库客户端：MinIO、PyMilvus；</li>
+<li>Node 包管理：固定版本的 pnpm。</li>
+</ul>
+<p>依赖在镜像构建阶段一次性安装，而不是等每个用户容器启动后再联网下载。这样既缩短了用户实例启动时间，也让不同用户获得一致的工具版本。</p>
+<p>对于离线部署，我们额外保留镜像 tar 包和独立 compose 配置。交付环境只需加载镜像、填写脱敏后的环境变量并启动服务，不依赖现场访问 npm 或 PyPI。</p>
+<h2 id="九、运维流程也要随架构一起改"><a href="#九、运维流程也要随架构一起改" class="headerlink" title="九、运维流程也要随架构一起改"></a>九、运维流程也要随架构一起改</h2><p>多用户容器化之后，“改一个环境变量然后重启服务”已经不够了。以系统模型配置变更为例，完整流程是：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">cd</span> docker</span><br><span class="line">docker compose build</span><br><span class="line">docker compose up -d --force-recreate dsh-gateway</span><br><span class="line">bash debug/restart_all.sh</span><br></pre></td></tr></table></figure>
+
+<p>为什么要重新构建？因为 Provider 模板、入口脚本和 Python&#x2F;Node 依赖都属于镜像内容。</p>
+<p>为什么要重建用户容器？因为环境变量只在容器创建时注入，普通 restart 不会刷新它们；同时用户容器共享网关网络命名空间，网关被替换后必须重新关联。</p>
+<p>为什么只处理运行中的用户？因为“停止”本身可能是管理员有意设置的状态，批量升级不应该擅自改变业务状态。</p>
+<p>用户数据位于命名卷中，重建容器不会删除会话、工作区或用户设置。但在生产环境执行升级前，仍应备份：</p>
+<ul>
+<li><code>/data/gateway/users.json</code>；</li>
+<li><code>/data/users/&lt;name&gt;/</code>；</li>
+<li>网关会话密钥及部署侧环境配置。</li>
+</ul>
+<h2 id="十、测试与验证"><a href="#十、测试与验证" class="headerlink" title="十、测试与验证"></a>十、测试与验证</h2><p>这类改造不能只验证首页能否打开。当前项目的网关冒烟测试覆盖了：</p>
+<ul>
+<li>健康检查；</li>
+<li>登录页渲染；</li>
+<li>错误密码拒绝；</li>
+<li>正确登录与跳转；</li>
+<li>登录后反向代理；</li>
+<li>用户自定义 Provider 可见；</li>
+<li>指定内置 Provider 被隐藏；</li>
+<li>用户 Provider 写入能到达自己的 DSH；</li>
+<li>未认证 API 返回 401。</li>
+</ul>
+<p>本文整理时，Node.js 语法检查全部通过，网关冒烟测试结果为 <strong>9 passed, 0 failed</strong>。</p>
+<p>生产上线前还应增加三类验证：</p>
+<ol>
+<li><strong>跨用户隔离测试</strong>：在 Alice 容器内尝试访问 Bob 的目录、配置和端口；</li>
+<li><strong>生命周期测试</strong>：创建、停止、重建、删除用户，并验证数据保留或清理符合预期；</li>
+<li><strong>升级回滚测试</strong>：备份命名卷，更新镜像和系统 Provider，再验证旧会话、用户自定义配置与生成文件不丢失。</li>
+</ol>
+<h2 id="十一、几个值得记录的设计取舍"><a href="#十一、几个值得记录的设计取舍" class="headerlink" title="十一、几个值得记录的设计取舍"></a>十一、几个值得记录的设计取舍</h2><h3 id="11-1-网关挂载-Docker-Socket-是高权限能力"><a href="#11-1-网关挂载-Docker-Socket-是高权限能力" class="headerlink" title="11.1 网关挂载 Docker Socket 是高权限能力"></a>11.1 网关挂载 Docker Socket 是高权限能力</h3><p>即使以只读方式挂载 <code>/var/run/docker.sock</code>，能够调用 Docker API 的进程仍然接近宿主机 root 权限。真正的控制点是：Admin API 不对公网直出、使用高强度 Token、Token 不传入用户容器，并限制网关代码可执行的 Docker 子命令。</p>
+<p>如果未来对安全边界要求更高，可以把容器管理拆成独立的最小权限控制服务，甚至迁移到 Kubernetes Operator，而不是继续让业务网关直接接触 Docker Socket。</p>
+<h3 id="11-2-共享网络命名空间解决了兼容性，也降低了网络隔离"><a href="#11-2-共享网络命名空间解决了兼容性，也降低了网络隔离" class="headerlink" title="11.2 共享网络命名空间解决了兼容性，也降低了网络隔离"></a>11.2 共享网络命名空间解决了兼容性，也降低了网络隔离</h3><p>该方案很好地兼容了 DSH 必须监听回环地址的限制，但用户进程理论上能够访问同一网络命名空间中的其他回环服务。因此不能把 Admin Token、数据库口令等管理凭据注入用户容器，也应继续收紧内部管理接口的认证。</p>
+<h3 id="11-3-“隐藏”与“禁止”必须明确区分"><a href="#11-3-“隐藏”与“禁止”必须明确区分" class="headerlink" title="11.3 “隐藏”与“禁止”必须明确区分"></a>11.3 “隐藏”与“禁止”必须明确区分</h3><p>Provider 展示隐藏只是产品体验策略，不能被描述成安全隔离。安全边界应建立在进程、目录、凭据与权限上。把 UI 过滤误当成安全控制，是本次迭代中最重要的反思之一。</p>
+<h2 id="十二、改造后的收益"><a href="#十二、改造后的收益" class="headerlink" title="十二、改造后的收益"></a>十二、改造后的收益</h2><p>改造完成后，DeepSeek Harness 从一个需要用户自行安装和维护的工具，变成了可由团队统一运营的浏览器工作台：</p>
+<ul>
+<li>用户侧只需要浏览器；</li>
+<li>平台统一提供模型和工具链；</li>
+<li>用户仍可维护自己的模型配置；</li>
+<li>会话、凭据和文件按用户隔离；</li>
+<li>生成文件可以直接上传、浏览和下载；</li>
+<li>用户实例可独立启停、重建和排障；</li>
+<li>Docker、legacy 和离线交付路径都得到保留。</li>
+</ul>
+<p>更重要的是，这次改造没有把“多用户”简单理解为增加一张用户表。对于具备代码执行和文件访问能力的 AI Agent，多用户化的本质是重新划分身份、进程、网络、存储、模型配置与运维权限的边界。</p>
+<h2 id="结语"><a href="#结语" class="headerlink" title="结语"></a>结语</h2><p>把开发者工具搬到服务器上很容易，把它做成安全、可维护、真正能交付成果的多人服务则完全是另一件事。</p>
+<p>这套方案目前仍有继续演进的空间，例如引入更严格的资源配额、审计日志、容器级 CPU&#x2F;内存限制、自动化备份恢复，以及把 Docker 管理权限从网关中进一步拆分。但通过“认证网关 + 每用户实例 + 子目录挂载 + 分层 Provider + 文件交付”的组合，我们已经建立了一条清晰且可持续演进的服务化路径。</p>
+<h2 id=""><a href="#" class="headerlink" title=""></a></h2><p>本文方案参考了 <a target="_blank" rel="noopener" href="https://github.com/AnkoCD/dsh-server-deployment">https://github.com/AnkoCD/dsh-server-deployment</a><br>使用openai Gpt-5.6sol进行改造</p>
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/2026/09/28/hello-world/">上一篇：Hello World</a><a href="/posts/cnblogs-22390407/">下一篇：Docker pull镜像save后仅导出几KB：镜像 Layer 缺失问题排查与解决</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%80%E3%80%81%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A6%81%E5%81%9A%E8%BF%99%E6%AC%A1%E6%94%B9%E9%80%A0"><span class="toc-number">1.</span> <span class="toc-text">一、为什么要做这次改造</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%8C%E3%80%81%E7%9B%AE%E6%A0%87%E6%9E%B6%E6%9E%84"><span class="toc-number">2.</span> <span class="toc-text">二、目标架构</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%89%E3%80%81%E7%AC%AC%E4%B8%80%E6%AD%A5%EF%BC%9A%E5%9C%A8-DSH-%E5%89%8D%E5%A2%9E%E5%8A%A0%E8%AE%A4%E8%AF%81%E4%B8%8E%E8%B7%AF%E7%94%B1%E7%BD%91%E5%85%B3"><span class="toc-number">3.</span> <span class="toc-text">三、第一步：在 DSH 前增加认证与路由网关</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%9B%9B%E3%80%81%E7%AC%AC%E4%BA%8C%E6%AD%A5%EF%BC%9A%E4%BB%8E%E5%85%B1%E4%BA%AB%E5%AE%9E%E4%BE%8B%E6%94%B9%E6%88%90%E6%AF%8F%E7%94%A8%E6%88%B7%E7%8B%AC%E7%AB%8B%E5%AE%B9%E5%99%A8"><span class="toc-number">4.</span> <span class="toc-text">四、第二步：从共享实例改成每用户独立容器</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#4-1-%E4%B8%BA%E4%BB%80%E4%B9%88%E9%87%87%E7%94%A8%E2%80%9C%E4%B8%80%E9%95%9C%E5%83%8F%E3%80%81%E4%B8%A4%E8%A7%92%E8%89%B2%E2%80%9D"><span class="toc-number">4.1.</span> <span class="toc-text">4.1 为什么采用“一镜像、两角色”</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#4-2-DSH-%E5%BF%85%E9%A1%BB%E7%BB%91%E5%AE%9A%E5%9B%9E%E7%8E%AF%E5%9C%B0%E5%9D%80%E5%B8%A6%E6%9D%A5%E7%9A%84%E7%BD%91%E7%BB%9C%E9%97%AE%E9%A2%98"><span class="toc-number">4.2.</span> <span class="toc-text">4.2 DSH 必须绑定回环地址带来的网络问题</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%94%E3%80%81%E7%AC%AC%E4%B8%89%E6%AD%A5%EF%BC%9A%E6%8A%8A%E2%80%9C%E6%9C%89%E6%8C%81%E4%B9%85%E5%8C%96%E2%80%9D%E5%8D%87%E7%BA%A7%E6%88%90%E2%80%9C%E6%9C%89%E9%9A%94%E7%A6%BB%E7%9A%84%E6%8C%81%E4%B9%85%E5%8C%96%E2%80%9D"><span class="toc-number">5.</span> <span class="toc-text">五、第三步：把“有持久化”升级成“有隔离的持久化”</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%AD%E3%80%81%E7%AC%AC%E5%9B%9B%E6%AD%A5%EF%BC%9A%E9%87%8D%E6%96%B0%E8%AE%BE%E8%AE%A1%E6%A8%A1%E5%9E%8B-Provider-%E7%AE%A1%E7%90%86"><span class="toc-number">6.</span> <span class="toc-text">六、第四步：重新设计模型 Provider 管理</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%83%E3%80%81%E7%AC%AC%E4%BA%94%E6%AD%A5%EF%BC%9A%E8%AE%A9-Agent-%E7%94%9F%E6%88%90%E7%9A%84%E6%96%87%E4%BB%B6%E7%9C%9F%E6%AD%A3%E5%8F%AF%E4%BA%A4%E4%BB%98"><span class="toc-number">7.</span> <span class="toc-text">七、第五步：让 Agent 生成的文件真正可交付</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%AB%E3%80%81%E7%AC%AC%E5%85%AD%E6%AD%A5%EF%BC%9A%E6%8A%8A%E5%B8%B8%E7%94%A8%E5%B7%A5%E5%85%B7%E9%93%BE%E5%81%9A%E8%BF%9B%E9%95%9C%E5%83%8F"><span class="toc-number">8.</span> <span class="toc-text">八、第六步：把常用工具链做进镜像</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B9%9D%E3%80%81%E8%BF%90%E7%BB%B4%E6%B5%81%E7%A8%8B%E4%B9%9F%E8%A6%81%E9%9A%8F%E6%9E%B6%E6%9E%84%E4%B8%80%E8%B5%B7%E6%94%B9"><span class="toc-number">9.</span> <span class="toc-text">九、运维流程也要随架构一起改</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%8D%81%E3%80%81%E6%B5%8B%E8%AF%95%E4%B8%8E%E9%AA%8C%E8%AF%81"><span class="toc-number">10.</span> <span class="toc-text">十、测试与验证</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%8D%81%E4%B8%80%E3%80%81%E5%87%A0%E4%B8%AA%E5%80%BC%E5%BE%97%E8%AE%B0%E5%BD%95%E7%9A%84%E8%AE%BE%E8%AE%A1%E5%8F%96%E8%88%8D"><span class="toc-number">11.</span> <span class="toc-text">十一、几个值得记录的设计取舍</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#11-1-%E7%BD%91%E5%85%B3%E6%8C%82%E8%BD%BD-Docker-Socket-%E6%98%AF%E9%AB%98%E6%9D%83%E9%99%90%E8%83%BD%E5%8A%9B"><span class="toc-number">11.1.</span> <span class="toc-text">11.1 网关挂载 Docker Socket 是高权限能力</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#11-2-%E5%85%B1%E4%BA%AB%E7%BD%91%E7%BB%9C%E5%91%BD%E5%90%8D%E7%A9%BA%E9%97%B4%E8%A7%A3%E5%86%B3%E4%BA%86%E5%85%BC%E5%AE%B9%E6%80%A7%EF%BC%8C%E4%B9%9F%E9%99%8D%E4%BD%8E%E4%BA%86%E7%BD%91%E7%BB%9C%E9%9A%94%E7%A6%BB"><span class="toc-number">11.2.</span> <span class="toc-text">11.2 共享网络命名空间解决了兼容性，也降低了网络隔离</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#11-3-%E2%80%9C%E9%9A%90%E8%97%8F%E2%80%9D%E4%B8%8E%E2%80%9C%E7%A6%81%E6%AD%A2%E2%80%9D%E5%BF%85%E9%A1%BB%E6%98%8E%E7%A1%AE%E5%8C%BA%E5%88%86"><span class="toc-number">11.3.</span> <span class="toc-text">11.3 “隐藏”与“禁止”必须明确区分</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%8D%81%E4%BA%8C%E3%80%81%E6%94%B9%E9%80%A0%E5%90%8E%E7%9A%84%E6%94%B6%E7%9B%8A"><span class="toc-number">12.</span> <span class="toc-text">十二、改造后的收益</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E7%BB%93%E8%AF%AD"><span class="toc-number">13.</span> <span class="toc-text">结语</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">14.</span> <span class="toc-text"></span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>

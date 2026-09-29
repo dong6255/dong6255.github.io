@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>spring项目使用EMQX，使用@Autowired注入失败报错空指针问题记录 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2024-04-03T07:22:00.000Z">2024.04.03</time><span>April</span></div><h1>spring项目使用EMQX，使用@Autowired注入失败报错空指针问题记录</h1><a class="tag" href="/tags/Spring-Boot/"># Spring Boot</a></section><div class="reading-grid"><article class="prose">
+
+
+
+
+<p></p>
+<div class="toc">
+<h4>目录</h4>
+<ul><li><a href="#javaMQTT_2" rel="nofollow">java客户端使用MQTT订阅消息大致流程</a></li><li><ul><li><a href="#MQTTConnect_7" rel="nofollow">MQTTConnect部分代码</a></li><li><a href="#MQTTListener_35" rel="nofollow">MQTTListener部分代码</a></li></ul>
+</li><li><a href="#_69" rel="nofollow">问题分析</a></li><li><a href="#_76" rel="nofollow">问题原因</a></li><li><a href="#_81" rel="nofollow">解决方法</a></li><li><a href="#_95" rel="nofollow">总结</a></li><li><a href="#_97" rel="nofollow">参考</a></li></ul>
+</div>
+<p></p>
+<h2><a id="javaMQTT_2"></a>java客户端使用MQTT订阅消息大致流程</h2>
+<ol><li>首先通过消息服务器节点的地址，new 一个MqttClient连接对象然后给MqttClient设置回调。</li><li>这里是通过<strong>new 一个MqttCallback对象（注入失败问题就在这）</strong> 来实现对topic中消息的监听和处理，所以服务端的处理心跳消息的主要业务逻辑均在MqttCallback实例中的messageArrived方法中。</li><li>建立连接。</li><li>订阅topic。</li></ol>
+<h3><a id="MQTTConnect_7"></a>MQTTConnect部分代码</h3>
+<pre><code class="prism language-java">    <span class="token comment">/**
+     * 客户端connect连接mqtt服务器
+     *
+     * @param mqttCallback 回调函数
+     **/</span>
+   <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setMqttClient</span><span class="token punctuation">(</span><span class="token class-name">MqttCallback</span> mqttCallback<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">MqttException</span> <span class="token punctuation">&#123;<!-- --></span>
+        <span class="token class-name">MqttConnectOptions</span> options <span class="token operator">=</span> <span class="token function">mqttConnectOptions</span><span class="token punctuation">(</span><span class="token constant">USER_NAME</span><span class="token punctuation">,</span> <span class="token constant">PASS_WORD</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mqttClient<span class="token punctuation">.</span><span class="token function">setCallback</span><span class="token punctuation">(</span>mqttCallback<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mqttClient<span class="token punctuation">.</span><span class="token function">connect</span><span class="token punctuation">(</span>options<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">&#125;</span>
+
+    <span class="token comment">/**
+     * MQTT连接参数设置
+     */</span>
+    <span class="token keyword">private</span> <span class="token class-name">MqttConnectOptions</span> <span class="token function">mqttConnectOptions</span><span class="token punctuation">(</span><span class="token class-name">String</span> userName<span class="token punctuation">,</span> <span class="token class-name">String</span> passWord<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">MqttException</span> <span class="token punctuation">&#123;<!-- --></span>
+        mqttClient <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MqttClient</span><span class="token punctuation">(</span><span class="token constant">HOST</span><span class="token punctuation">,</span> clientId<span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">MemoryPersistence</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">MqttConnectOptions</span> options <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MqttConnectOptions</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        options<span class="token punctuation">.</span><span class="token function">setUserName</span><span class="token punctuation">(</span>userName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        options<span class="token punctuation">.</span><span class="token function">setPassword</span><span class="token punctuation">(</span>passWord<span class="token punctuation">.</span><span class="token function">toCharArray</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        options<span class="token punctuation">.</span><span class="token function">setConnectionTimeout</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">///默认：30</span>
+        options<span class="token punctuation">.</span><span class="token function">setAutomaticReconnect</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//默认：false</span>
+        options<span class="token punctuation">.</span><span class="token function">setCleanSession</span><span class="token punctuation">(</span><span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//默认：true</span>
+        <span class="token comment">//options.setKeepAliveInterval(20);//默认：60</span>
+        <span class="token keyword">return</span> options<span class="token punctuation">;</span>
+    <span class="token punctuation">&#125;</span>
+</code></pre>
+<h3><a id="MQTTListener_35"></a>MQTTListener部分代码</h3>
+<pre><code class="prism language-java"><span class="token comment">/**
+* 这里采用了自定义一个ApplicationListener监听类，
+* 在onApplicationEvent()方法中执行连接mqtt服务和订阅主题。
+**/</span>
+<span class="token annotation punctuation">@Slf4j</span>
+<span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MQTTListener</span> <span class="token keyword">implements</span> <span class="token class-name">ApplicationListener</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ContextRefreshedEvent</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">&#123;<!-- --></span>
+
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">MQTTConnect</span> server<span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@Autowired</span>
+    <span class="token keyword">public</span> <span class="token class-name">MQTTListener</span><span class="token punctuation">(</span><span class="token class-name">MQTTConnect</span> server<span class="token punctuation">)</span> <span class="token punctuation">&#123;<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>server <span class="token operator">=</span> server<span class="token punctuation">;</span>
+    <span class="token punctuation">&#125;</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onApplicationEvent</span><span class="token punctuation">(</span><span class="token class-name">ContextRefreshedEvent</span> contextRefreshedEvent<span class="token punctuation">)</span> <span class="token punctuation">&#123;<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">&#123;<!-- --></span>
+            <span class="token comment">// 连接mqtt服务</span>
+            server<span class="token punctuation">.</span><span class="token function">setMqttClient</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Callback</span><span class="token punctuation">(</span>server<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 订阅主题</span>
+            server<span class="token punctuation">.</span><span class="token function">sub</span><span class="token punctuation">(</span><span class="token string">"com/iot/init"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            server<span class="token punctuation">.</span><span class="token function">sub</span><span class="token punctuation">(</span><span class="token string">"com/iot/init1"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            server<span class="token punctuation">.</span><span class="token function">sub</span><span class="token punctuation">(</span><span class="token string">"com/iot/init2"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            server<span class="token punctuation">.</span><span class="token function">sub</span><span class="token punctuation">(</span><span class="token string">"com/iot/init3"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">&#125;</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">MqttException</span> e<span class="token punctuation">)</span> <span class="token punctuation">&#123;<!-- --></span>
+            log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>e<span class="token punctuation">.</span><span class="token function">getMessage</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">&#125;</span>
+    <span class="token punctuation">&#125;</span>
+<span class="token punctuation">&#125;</span>
+</code></pre>
+<h2><a id="_69"></a>问题分析</h2>
+<p>由于我们需要在消息监听回调中执行业务逻辑，比如根据消息中的某个字段使用mapper查询数据库。所以在Callback类中用@Autowired引入的项目中的serviceImpl。这里可以看到注入的serviceImpl出现了空指针。</p>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/0fcb16608bcf50f7b8e0.png"/></p>
+<h2><a id="_76"></a>问题原因</h2>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/ebfc0b49e025f920a8bd.png"/><br/> 在MQTTListener中我们使用了new来创建CallBack这个bean，那么我们在CallBack这个类的示例中注入bean就会失败，出现null。<br/> 这里原因可能是new出来的实例对象不由spring管理，所以其内部注入的bean也就失败了。（这里如果说的不对，希望大佬不吝赐教）</p>
+<h2><a id="_81"></a>解决方法</h2>
+<pre><code>解决方法就是使用到服务的时候，动态去加载Bean。
+</code></pre>
+<ol><li>使用applicationContext的getBean()方法在使用的地方动态注入，比如以下的方式。</li></ol>
+<pre><code class="prism language-java">dynamicRoutingDataSource <span class="token operator">=</span> applicationContext<span class="token punctuation">.</span><span class="token function">getBean</span><span class="token punctuation">(</span><span class="token class-name">DynamicRoutingDataSource</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre>
+<ol start="2"><li>在MQTTListener设置回调CallBack类时，使用注入的CallBack类的Bean。</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/69c9281e12465308af8e.png"/></p>
+<h2><a id="_95"></a>总结</h2>
+<pre><code>在Spring项目中，尽量统一把bean交给Spring容器管理，少使用new创建实例对象。
+</code></pre>
+<h2><a id="_97"></a>参考</h2>
+<p><a target="_blank" rel="noopener" href="https://blog.csdn.net/qq_28742063/article/details/132536199">记一次Spring项目中使用@Autowired注入bean，使用时报空指针异常的问题</a><br/> <a target="_blank" rel="noopener" href="https://blog.csdn.net/mike__cool/article/details/84335245">Spring @Autowired注入为null，空指针异常</a></p>
+
+
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/cnblogs-18814585/">上一篇：AndrodStudio构建时报错Could not find com.android.tools.build:gradle:xxx</a><a href="/posts/cnblogs-18814587/">下一篇：idea插件开发踩坑记录</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-4"><a class="toc-link"><span class="toc-number">1.</span> <span class="toc-text">目录</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">2.</span> <span class="toc-text">java客户端使用MQTT订阅消息大致流程</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link"><span class="toc-number">2.1.</span> <span class="toc-text">MQTTConnect部分代码</span></a></li><li class="toc-item toc-level-3"><a class="toc-link"><span class="toc-number">2.2.</span> <span class="toc-text">MQTTListener部分代码</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">3.</span> <span class="toc-text">问题分析</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">4.</span> <span class="toc-text">问题原因</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">5.</span> <span class="toc-text">解决方法</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">6.</span> <span class="toc-text">总结</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">7.</span> <span class="toc-text">参考</span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>

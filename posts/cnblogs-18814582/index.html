@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>外网pnpm安装的node_modules包迁移到内网环境提示node_modules will be removed and reinstalled from scratch.Proceed? | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2024-09-13T03:39:00.000Z">2024.09.13</time><span>April</span></div><h1>外网pnpm安装的node_modules包迁移到内网环境提示node_modules will be removed and reinstalled from scratch.Proceed?</h1><a class="tag" href="/tags/pnpm/"># pnpm</a></section><div class="reading-grid"><article class="prose">
+
+
+
+
+<h2><a id="_0"></a>背景</h2>
+<p>由于内网没有所需的node包，于是在外网使用pnpm install安装后将node_modules复制到内网的项目目录下，内网执行pnpm install后提示node_modules will be removed and reinstalled from scratch.Proceed?，无论选择是否执行都会删除复制过来的node包并重新下载，由于内网环境所以下载失败404。<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/4636a197e57abbc90bff.jpeg"/></p>
+<h2><a id="_5"></a>原因</h2>
+<p>当前存储库不是内网环境中pnpm所配置的，需要重新指向新的存储库</p>
+<h2><a id="_8"></a>解决</h2>
+<ol><li>除了node_modules还需要复制.pnpm-store文件夹，这个是个隐藏文件夹，可以用everything软件找一下。将其一起复制到内网环境中并替换原有.pnpm-stor文件夹。</li><li>打开出问题的项目目录中的node_modules文件夹，最下面有一个.modules.yaml文件拉到最下面修改storeDir和virtualStoreDir地址。</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/cdb8d455592699367768.png"/></p>
+<ol start="3"><li>修改virtualStoreDir为当前项目的.pnpm文件夹<br/> 修改storeDir为新的.pnpm-store\v3文件夹</li><li>重新执行pnpm install即可</li></ol>
+<h2><a id="_22"></a>二编</h2>
+<p>注意需要确定内外网的node和pnpm版本一致，项目中有一个pnpm-lock.yaml文件，用于锁定依赖版本，如果内网外版本不一致，即时按上述修改也会出现node_modules will be removed and reinstalled from scratch.Proceed?的报错。</p>
+
+
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/cnblogs-18814581/">上一篇：springboot和jdk的版本对应关系</a><a href="/posts/cnblogs-18814583/">下一篇：Maven导包报错Could not resolve dependencies for projectXXX was cached in the local repository....</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">1.</span> <span class="toc-text">背景</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">2.</span> <span class="toc-text">原因</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">3.</span> <span class="toc-text">解决</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">4.</span> <span class="toc-text">二编</span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>

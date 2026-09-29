@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>exe4j工具使用-jar包转exe可执行文件 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2024-05-11T01:26:00.000Z">2024.05.11</time><span>April</span></div><h1>exe4j工具使用-jar包转exe可执行文件</h1></section><div class="reading-grid"><article class="prose">
+
+
+
+
+<h2><a id="exe4j_0"></a>exe4j介绍</h2>
+<p>exe4j可以将java打包的jar包转为exe可执行文件，实现在没有jdk环境下运行jar包。</p>
+<h2><a id="_2"></a>下载链接</h2>
+<pre><code>https://pan.baidu.com/s/1sfEJyxPABmhslG8Cy4YwbQ?pwd=2brh 
+密码：2brh
+</code></pre>
+<h2><a id="_6"></a>使用步骤</h2>
+<ol><li>安装过程这里省略掉了，网上很多教程，一直点下一步就可以。</li><li>打开keymaker，生成序列码。</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/58f163cb00a0647476da.png"/></p>
+<ol start="3"><li>点击change Liscense，name和company可以随便填，点击next。</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/de753b68251fd110274f.png"/></p>
+<ol start="4"><li>选择JAR in EXE mode，点击next。</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/dda6f72c8f5f2cb3aa78.png"/></p>
+<ol start="5"><li>选择exe文件输出到哪个目录。<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/65b27790b6fd883662aa.png"/></li><li>选择执行类型和生成的exe文件名。<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/dbaccec528dd33adc57b.png"/></li><li>在advanced Options中选择32-bit or 64-bit。<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/a1fc6707feb58e735c75.png"/></li></ol>
+<p>或者直接从左侧的32-bit or 64-bit进入，勾选generate 64-bit executable。</p>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/e20b475a06548c970664.png"/></p>
+<ol start="8"><li>这里不用改直接点next。<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/62b837ed47109e9e7f5c.png"/></li><li>点击加号，选择archive，在下方选择jar包。</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/2a8dad7c01b73e3a7f6a.png"/></p>
+<ol start="10"><li>main class from中选择启动类，注意选择的spring项目的启动类应为<strong>org.springframework.boot.loader.JarLauncher</strong> ，而不是application文件（这里之前踩坑会报错ClassNotFound）</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/5b6cb10713b29b7888a4.png"/></p>
+<ol start="11"><li>填写需要的jre版本，这里根据自己实际情况填写</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/3ff64bf51ed8f381dbfe.png"/></p>
+<ol start="12"><li>在advanced Options中选择Search sequence<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/c3c10b60d824e6d24da3.png"/></li><li>在电脑中找到jdk文件夹，<strong>将其中的jre文件夹放在想要输出exe的文件夹</strong>（因为最后希望在没有jdk环境的电脑中执行exe，所以需要把jre文件夹和exe放在一起），如果忘了jdk放在哪，可以用cmd输入 <strong>where java</strong> 查找目录。</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/7dac0aad6ac6c50c1a59.png"/><br/> <img alt="在这里插入图片描述" src="/images/cnblogs/997122500ac436558449.png"/></p>
+<p>用右侧的上移将配置的jre挪到最上面或者将其他没用的删除掉，因为exe4j会按顺序读。</p>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/f6bed018368d5ef00565.png"/></p>
+<ol start="14"><li>之后一路点击下一步</li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/7207538b634d03bb50a3.png"/></p>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/bfa3301c51624f3b81a6.png"/></p>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/5439ebdc875156e18159.png"/></p>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/88c5a9a00a5a9ecbb175.png"/></p>
+<ol start="15"><li>网站项目的话用这里的地址访问即可<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/5f59189176032206fe5b.png"/></li></ol>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/8d5831e0504743ed1713.png"/></p>
+<h2><a id="_83"></a>问题列表</h2>
+<h3><a id="1javalangNoClassDefFoundError_BOOTINFclassesorgjeecgJeecgSystemApplication_wrong_name_XXXXX_84"></a>1.找不到主类java.lang.NoClassDefFoundError: BOOT-INF/classes/org/jeecg/JeecgSystemApplication (wrong name: XXXXX)</h3>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/055b6ae80fa134b26ca8.png"/></p>
+<h4><a id="_88"></a>解决办法</h4>
+<p>Java invocation这步中main class 选择org.springframework.boot.loader.JarLauncher即可<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/2f8c899c3ccd3574db26.png"/></p>
+<h3><a id="2The_JVM_found_at_jre_is_damagedPlease_reinstall_or_define_EXE4J_JAVA_HOME_to_point_to_an_installed_32bit_JDK_or_JRE_92"></a>2.The JVM found at ..\jre is damaged.Please reinstall or define EXE4J_JAVA_HOME to point to an installed 32-bit JDK or JRE.</h3>
+<p><img alt="在这里插入图片描述" src="/images/cnblogs/7bc82eb0903c49e1385f.png"/></p>
+<h4><a id="_95"></a>解决办法</h4>
+<p>这里勾选Generate 64-bit executable<br/> <img alt="在这里插入图片描述" src="/images/cnblogs/08b00f64f1207c51a81f.png"/></p>
+
+
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/cnblogs-18814583/">上一篇：Maven导包报错Could not resolve dependencies for projectXXX was cached in the local repository....</a><a href="/posts/cnblogs-18814585/">下一篇：AndrodStudio构建时报错Could not find com.android.tools.build:gradle:xxx</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">1.</span> <span class="toc-text">exe4j介绍</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">2.</span> <span class="toc-text">下载链接</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">3.</span> <span class="toc-text">使用步骤</span></a></li><li class="toc-item toc-level-2"><a class="toc-link"><span class="toc-number">4.</span> <span class="toc-text">问题列表</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link"><span class="toc-number">4.1.</span> <span class="toc-text">1.找不到主类java.lang.NoClassDefFoundError: BOOT-INF&#x2F;classes&#x2F;org&#x2F;jeecg&#x2F;JeecgSystemApplication (wrong name: XXXXX)</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link"><span class="toc-number">4.1.1.</span> <span class="toc-text">解决办法</span></a></li></ol></li><li class="toc-item toc-level-3"><a class="toc-link"><span class="toc-number">4.2.</span> <span class="toc-text">2.The JVM found at ..\jre is damaged.Please reinstall or define EXE4J_JAVA_HOME to point to an installed 32-bit JDK or JRE.</span></a><ol class="toc-child"><li class="toc-item toc-level-4"><a class="toc-link"><span class="toc-number">4.2.1.</span> <span class="toc-text">解决办法</span></a></li></ol></li></ol></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>

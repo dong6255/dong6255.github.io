@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Docker pull镜像save后仅导出几KB：镜像 Layer 缺失问题排查与解决 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2026-08-11T03:03:00.000Z">2026.08.11</time><span>April</span></div><h1>Docker pull镜像save后仅导出几KB：镜像 Layer 缺失问题排查与解决</h1><a class="tag" href="/tags/Docker/"># Docker</a></section><div class="reading-grid"><article class="prose"><h2 id="一、问题背景"><a href="#一、问题背景" class="headerlink" title="一、问题背景"></a>一、问题背景</h2><p>在需要将 Docker 镜像从联网环境迁移到离线环境时，一般会使用：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">docker pull &lt;image&gt;</span><br><span class="line"></span><br><span class="line">docker save -o image.tar &lt;image&gt;</span><br></pre></td></tr></table></figure>
+
+<p>然后将 <code>image.tar</code> 拷贝到离线环境：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker load -i image.tar</span><br></pre></td></tr></table></figure>
+
+<p>本次在迁移：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">vllm/vllm-openai:latest</span><br></pre></td></tr></table></figure>
+
+<p>镜像时，却遇到了一个非常异常的问题：</p>
+<ul>
+<li>本地镜像大小约 30GB；</li>
+<li><code>docker save</code> 导出的 tar 文件只有约 17KB；</li>
+<li>tar 文件可以正常解包，并且是 OCI Image Layout；</li>
+<li>归档中只有少量 manifest &#x2F; metadata；</li>
+<li>真正的 filesystem layer 并没有被导出；</li>
+<li>将 tar 文件带到离线环境后无法正常使用；</li>
+<li>指定 <code>--platform=linux/amd64</code> 导出时，Docker 又提示该镜像不提供 amd64 平台。</li>
+</ul>
+<p>最终确认，该现象与 Docker 29.2 + containerd image store 下的一个 Moby 官方 Bug 高度一致。</p>
+<p>最终通过一次“空 Build”成功解决，而且不需要重新下载约 30GB 的 vLLM 镜像。</p>
+<hr>
+<h2 id="二、系统环境"><a href="#二、系统环境" class="headerlink" title="二、系统环境"></a>二、系统环境</h2><p>本次出现问题的实际环境如下。</p>
+<h3 id="Docker-Client"><a href="#Docker-Client" class="headerlink" title="Docker Client"></a>Docker Client</h3><figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">Version:           29.2.0</span><br><span class="line">API version:       1.53</span><br><span class="line">Go version:        go1.25.6</span><br><span class="line">Git commit:        0b9d198</span><br><span class="line">OS/Arch:           linux/amd64</span><br><span class="line">Context:           default</span><br></pre></td></tr></table></figure>
+
+<h3 id="Docker-Server"><a href="#Docker-Server" class="headerlink" title="Docker Server"></a>Docker Server</h3><figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">Docker Desktop:    4.59.0</span><br><span class="line">Engine Version:    29.2.0</span><br><span class="line">API version:       1.53</span><br><span class="line">OS/Arch:           linux/amd64</span><br><span class="line">Experimental:      false</span><br></pre></td></tr></table></figure>
+
+<h3 id="containerd"><a href="#containerd" class="headerlink" title="containerd"></a>containerd</h3><figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">Version:           v2.2.1</span><br><span class="line">GitCommit:         dea7da592f5d1d2b7755e3a161be07f43fad8f75</span><br></pre></td></tr></table></figure>
+
+<h3 id="runc"><a href="#runc" class="headerlink" title="runc"></a>runc</h3><figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">Version:           1.3.4</span><br></pre></td></tr></table></figure>
+
+<p>目标镜像：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">vllm/vllm-openai:latest</span><br></pre></td></tr></table></figure>
+
+<p>本地镜像大小约：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">30GB</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h1 id="三、异常现象"><a href="#三、异常现象" class="headerlink" title="三、异常现象"></a>三、异常现象</h1><p>正常情况下，一个约 30GB 的 Docker 镜像执行：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">docker save \</span><br><span class="line">  -o openaivllmlatest.tar \</span><br><span class="line">  vllm/vllm-openai:latest</span><br></pre></td></tr></table></figure>
+
+<p>得到的 tar 至少应该是 GB 级。</p>
+<p>但实际生成的文件只有：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">约 17KB</span><br></pre></td></tr></table></figure>
+
+<p>这显然不可能是正常压缩。</p>
+<p>进一步查看归档内容：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">tar -tf openaivllmlatest.tar</span><br></pre></td></tr></table></figure>
+
+<p>得到：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line">blobs/</span><br><span class="line">blobs/sha256/</span><br><span class="line">blobs/sha256/07ea4e292adf3a26b05ac97114b28849cf4551a26beb1fbe7decd3842d752ed7</span><br><span class="line">blobs/sha256/5b03c7de2951cda2d5fd087457902625eabbe9188478e439561ef34f325b0fd5</span><br><span class="line">index.json</span><br><span class="line">manifest.json</span><br><span class="line">oci-layout</span><br></pre></td></tr></table></figure>
+
+<p>这里已经能够发现明显异常。</p>
+<p>一个约 30GB 的大型 CUDA&#x2F;vLLM 镜像，正常情况下：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">blobs/sha256/</span><br></pre></td></tr></table></figure>
+
+<p>下面应该存在大量：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">config</span><br><span class="line">manifest</span><br><span class="line">filesystem layer</span><br></pre></td></tr></table></figure>
+
+<p>而这里实际只有两个 blob。</p>
+<p>也就是说：</p>
+<blockquote>
+<p>30GB 并不是被压缩成了 17KB，而是几十 GB 的镜像 Layer 根本没有进入 <code>docker save</code> 生成的 tar。</p>
+</blockquote>
+<hr>
+<h1 id="四、进一步分析-Manifest"><a href="#四、进一步分析-Manifest" class="headerlink" title="四、进一步分析 Manifest"></a>四、进一步分析 Manifest</h1><p>继续读取其中一个 blob：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">tar -xOf openaivllmlatest.tar \</span><br><span class="line">  blobs/sha256/07ea4e292adf3a26b05ac97114b28849cf4551a26beb1fbe7decd3842d752ed7 \</span><br><span class="line">  | jq .</span><br></pre></td></tr></table></figure>
+
+<p>得到：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;schemaVersion&quot;</span><span class="punctuation">:</span> <span class="number">2</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;mediaType&quot;</span><span class="punctuation">:</span> <span class="string">&quot;application/vnd.docker.distribution.manifest.list.v2+json&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;manifests&quot;</span><span class="punctuation">:</span> <span class="punctuation">[</span></span><br><span class="line">    <span class="punctuation">&#123;</span></span><br><span class="line">      <span class="attr">&quot;mediaType&quot;</span><span class="punctuation">:</span> <span class="string">&quot;application/vnd.docker.distribution.manifest.v2+json&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;size&quot;</span><span class="punctuation">:</span> <span class="number">7238</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;digest&quot;</span><span class="punctuation">:</span> <span class="string">&quot;sha256:7441a0579b7974fe00eec2c41a5710bcd0dc3dafc03edcdc5663158dd68286cf&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;platform&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">        <span class="attr">&quot;architecture&quot;</span><span class="punctuation">:</span> <span class="string">&quot;arm64&quot;</span><span class="punctuation">,</span></span><br><span class="line">        <span class="attr">&quot;os&quot;</span><span class="punctuation">:</span> <span class="string">&quot;linux&quot;</span></span><br><span class="line">      <span class="punctuation">&#125;</span></span><br><span class="line">    <span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="punctuation">&#123;</span></span><br><span class="line">      <span class="attr">&quot;mediaType&quot;</span><span class="punctuation">:</span> <span class="string">&quot;application/vnd.docker.distribution.manifest.v2+json&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;size&quot;</span><span class="punctuation">:</span> <span class="number">7239</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;digest&quot;</span><span class="punctuation">:</span> <span class="string">&quot;sha256:5b03c7de2951cda2d5fd087457902625eabbe9188478e439561ef34f325b0fd5&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;platform&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">        <span class="attr">&quot;architecture&quot;</span><span class="punctuation">:</span> <span class="string">&quot;amd64&quot;</span><span class="punctuation">,</span></span><br><span class="line">        <span class="attr">&quot;os&quot;</span><span class="punctuation">:</span> <span class="string">&quot;linux&quot;</span></span><br><span class="line">      <span class="punctuation">&#125;</span></span><br><span class="line">    <span class="punctuation">&#125;</span></span><br><span class="line">  <span class="punctuation">]</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>Manifest List 中明确存在：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">linux/arm64</span><br><span class="line">linux/amd64</span><br></pre></td></tr></table></figure>
+
+<p>于是继续尝试：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">docker image save \</span><br><span class="line">  --platform=linux/amd64 \</span><br><span class="line">  -o openaivllm-amd64.tar \</span><br><span class="line">  vllm/vllm-openai:latest</span><br></pre></td></tr></table></figure>
+
+<p>Docker 却返回：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">Error response from daemon:</span><br><span class="line">no suitable export target found:</span><br><span class="line">image with reference vllm/vllm-openai:latest was found</span><br><span class="line">but does not provide the specified platform (linux/amd64)</span><br></pre></td></tr></table></figure>
+
+<p>这时出现了一个非常有意思的矛盾：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br></pre></td><td class="code"><pre><span class="line">Manifest List</span><br><span class="line">     │</span><br><span class="line">     ├── linux/arm64</span><br><span class="line">     │</span><br><span class="line">     └── linux/amd64</span><br><span class="line">              │</span><br><span class="line">              ▼</span><br><span class="line">docker save --platform=linux/amd64</span><br><span class="line">              │</span><br><span class="line">              ▼</span><br><span class="line">Docker：没有 linux/amd64</span><br></pre></td></tr></table></figure>
+
+<p>因此问题并不是：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">vllm/vllm-openai 不支持 amd64</span><br></pre></td></tr></table></figure>
+
+<p>而是：</p>
+<blockquote>
+<p>Docker 本地 image store 中虽然存在对应的 Manifest 信息，但对应平台的 Layer&#x2F;Blob 没有处于 <code>docker save</code> 能够正确导出的状态。</p>
+</blockquote>
+<hr>
+<h1 id="五、官方-Issue"><a href="#五、官方-Issue" class="headerlink" title="五、官方 Issue"></a>五、官方 Issue</h1><p>这个问题与 Moby 官方 Issue #52193 高度一致。</p>
+<p>Issue 标题：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">c8d storage issue with `docker save` after `docker pull`</span><br></pre></td></tr></table></figure>
+
+<p>官方地址：</p>
+<p><a target="_blank" rel="noopener" href="https://github.com/moby/moby/issues/52193">https://github.com/moby/moby/issues/52193</a></p>
+<p>该 Issue 创建于：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">2026-03-19</span><br></pre></td></tr></table></figure>
+
+<p>并带有：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">containerd-integration</span><br><span class="line">kind/bug</span><br><span class="line">version/29.2</span><br></pre></td></tr></table></figure>
+
+<p>等标签。</p>
+<p>官方 Issue 的复现也是先执行：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker pull --platform ...</span><br></pre></td></tr></table></figure>
+
+<p>然后执行：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker save --platform ...</span><br></pre></td></tr></table></figure>
+
+<p>最终得到：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">no suitable export target found:</span><br><span class="line">image ... was found but does not provide the specified platform</span><br></pre></td></tr></table></figure>
+
+<p>Issue 中出现问题的环境包括：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">Docker Engine 29.2.1</span><br><span class="line">containerd 2.2.1</span><br><span class="line">Docker Desktop</span><br></pre></td></tr></table></figure>
+
+<p>而我的环境是：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">Docker Engine 29.2.0</span><br><span class="line">containerd 2.2.1</span><br><span class="line">Docker Desktop 4.59.0</span><br></pre></td></tr></table></figure>
+
+<p>两者高度接近。</p>
+<p>更加关键的是，该 Issue 还明确说明：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">Blobs that are expected to be present are missing</span><br></pre></td></tr></table></figure>
+
+<p>也就是说，本应存在的 Blob 实际无法被 exporter 获取，从而可能进一步产生：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">missing layers</span><br><span class="line">no such file or directory</span><br></pre></td></tr></table></figure>
+
+<p>等异常。</p>
+<hr>
+<h1 id="六、真正有效的解决方案"><a href="#六、真正有效的解决方案" class="headerlink" title="六、真正有效的解决方案"></a>六、真正有效的解决方案</h1><p>Moby #52193 中同时给出了一个非常有效的 workaround：</p>
+<blockquote>
+<p>对准备进行 <code>docker save</code> 的镜像执行一次 Build。</p>
+</blockquote>
+<p>本次实际测试同样有效。</p>
+<p>执行：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">docker build \</span><br><span class="line">  --platform=linux/amd64 \</span><br><span class="line">  -t vllm/vllm-openai:offline \</span><br><span class="line">  - &lt;&lt;<span class="string">&#x27;EOF&#x27;</span></span><br><span class="line">FROM vllm/vllm-openai:latest</span><br><span class="line">EOF</span><br></pre></td></tr></table></figure>
+
+<p>这里实际上相当于创建了一个只有一行内容的 Dockerfile：</p>
+<figure class="highlight dockerfile"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">FROM</span> vllm/vllm-openai:latest</span><br></pre></td></tr></table></figure>
+
+<p>没有：</p>
+<figure class="highlight dockerfile"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">RUN</span><span class="language-bash"></span></span><br><span class="line"><span class="language-bash">COPY</span></span><br><span class="line"><span class="keyword">ADD</span></span><br></pre></td></tr></table></figure>
+
+<p>也没有修改原始 vLLM 镜像里的任何内容。</p>
+<p>它只是重新基于原镜像生成一个本地 Build 结果：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">vllm/vllm-openai:latest</span><br><span class="line">          │</span><br><span class="line">          │ FROM</span><br><span class="line">          ▼</span><br><span class="line">vllm/vllm-openai:offline</span><br></pre></td></tr></table></figure>
+
+<p>完成以后重新导出：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">docker image save \</span><br><span class="line">  --platform=linux/amd64 \</span><br><span class="line">  -o openaivllm-amd64.tar \</span><br><span class="line">  vllm/vllm-openai:offline</span><br></pre></td></tr></table></figure>
+
+<p>这一次：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker save</span><br></pre></td></tr></table></figure>
+
+<p>恢复正常。</p>
+<p>生成的 tar 文件重新变成 GB 级，并且包含完整镜像 Layer。</p>
+<p>之后即可复制到离线环境：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker load -i openaivllm-amd64.tar</span><br></pre></td></tr></table></figure>
+
+<p>镜像可以正常使用。</p>
+<hr>
+<h1 id="七、为什么一次“空-Build”能够解决问题？"><a href="#七、为什么一次“空-Build”能够解决问题？" class="headerlink" title="七、为什么一次“空 Build”能够解决问题？"></a>七、为什么一次“空 Build”能够解决问题？</h1><p>这部分需要注意，目前更适合作为根据官方 Issue 和实际测试结果进行的机制分析，而不是把它描述成 Docker 官方已经完全确认的底层根因。</p>
+<p>问题发生时，可以简单理解成：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br></pre></td><td class="code"><pre><span class="line">docker pull</span><br><span class="line">     │</span><br><span class="line">     ▼</span><br><span class="line">containerd image store</span><br><span class="line">     │</span><br><span class="line">     ├── OCI Index 存在</span><br><span class="line">     ├── Manifest 存在</span><br><span class="line">     └── Blob / Layer 导出状态异常</span><br><span class="line">                │</span><br><span class="line">                ▼</span><br><span class="line">           docker save</span><br><span class="line">                │</span><br><span class="line">                ▼</span><br><span class="line">       只能导出少量 Metadata</span><br><span class="line">                │</span><br><span class="line">                ▼</span><br><span class="line">              17KB</span><br></pre></td></tr></table></figure>
+
+<p>而执行：</p>
+<figure class="highlight dockerfile"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">FROM</span> vllm/vllm-openai:latest</span><br></pre></td></tr></table></figure>
+
+<p>进行一次 Build 后，Docker&#x2F;BuildKit 需要重新解析：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">镜像 Manifest</span><br><span class="line">平台</span><br><span class="line">Config</span><br><span class="line">基础镜像 Layer</span><br></pre></td></tr></table></figure>
+
+<p>并生成新的本地构建结果。</p>
+<p>可以将这个过程理解成：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br></pre></td><td class="code"><pre><span class="line">原镜像</span><br><span class="line">   │</span><br><span class="line">   │ docker pull</span><br><span class="line">   ▼</span><br><span class="line">containerd image store</span><br><span class="line">   │</span><br><span class="line">   └── Layer/Blob 对 save 不可正常导出</span><br><span class="line">               │</span><br><span class="line">               ▼</span><br><span class="line">          docker build</span><br><span class="line">               │</span><br><span class="line">               ▼</span><br><span class="line">      BuildKit 重新解析基础镜像</span><br><span class="line">               │</span><br><span class="line">               ▼</span><br><span class="line">      生成新的本地 Image Result</span><br><span class="line">               │</span><br><span class="line">               ▼</span><br><span class="line">        Layer/Blob 可以被 exporter 获取</span><br><span class="line">               │</span><br><span class="line">               ▼</span><br><span class="line">          docker save 正常</span><br></pre></td></tr></table></figure>
+
+<p>因此，与其说：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">镜像损坏了</span><br></pre></td></tr></table></figure>
+
+<p>不如说：</p>
+<blockquote>
+<p>Docker 29.2 + containerd image store 场景下，<code>docker pull</code> 后的镜像在 <code>docker save</code> 导出过程中出现了 Blob&#x2F;Layer 的可见性或导出状态异常；重新执行 Build 可以触发 Docker&#x2F;BuildKit 重新处理这些 Layer，从而使其恢复为可正常导出的状态。</p>
+</blockquote>
+<hr>
+<h1 id="八、如何确认自己遇到的是同一个问题？"><a href="#八、如何确认自己遇到的是同一个问题？" class="headerlink" title="八、如何确认自己遇到的是同一个问题？"></a>八、如何确认自己遇到的是同一个问题？</h1><p>如果出现以下组合现象，就非常值得怀疑是相同问题。</p>
+<p>首先：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker images</span><br></pre></td></tr></table></figure>
+
+<p>镜像显示：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">10GB</span><br><span class="line">20GB</span><br><span class="line">30GB</span><br></pre></td></tr></table></figure>
+
+<p>甚至更大。</p>
+<p>但是：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker save -o image.tar image:tag</span><br></pre></td></tr></table></figure>
+
+<p>得到的文件却只有：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">几 KB</span><br><span class="line">几十 KB</span><br></pre></td></tr></table></figure>
+
+<p>查看：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">tar -tf image.tar</span><br></pre></td></tr></table></figure>
+
+<p>发现只有：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">blobs/</span><br><span class="line">blobs/sha256/</span><br><span class="line">index.json</span><br><span class="line">manifest.json</span><br><span class="line">oci-layout</span><br></pre></td></tr></table></figure>
+
+<p>并且：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">blobs/sha256/</span><br></pre></td></tr></table></figure>
+
+<p>下面只有极少量文件。</p>
+<p>同时再执行：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">docker save \</span><br><span class="line">  --platform=linux/amd64 \</span><br><span class="line">  -o image.tar \</span><br><span class="line">  image:tag</span><br></pre></td></tr></table></figure>
+
+<p>出现：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">no suitable export target found</span><br></pre></td></tr></table></figure>
+
+<p>或者：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">image ... was found but does not provide the specified platform</span><br></pre></td></tr></table></figure>
+
+<p>而 Manifest List 中明明存在：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">linux/amd64</span><br></pre></td></tr></table></figure>
+
+<p>那么这个问题与 Moby #52193 就非常接近了。</p>
+<hr>
+<h1 id="九、导出以后一定要进行验证"><a href="#九、导出以后一定要进行验证" class="headerlink" title="九、导出以后一定要进行验证"></a>九、导出以后一定要进行验证</h1><p>问题解决以后，不建议看到 <code>docker save</code> 没有报错就直接把文件带进离线环境。</p>
+<p>至少做下面几个检查。</p>
+<h2 id="1-检查文件大小"><a href="#1-检查文件大小" class="headerlink" title="1. 检查文件大小"></a>1. 检查文件大小</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">du</span> -h openaivllm-amd64.tar</span><br></pre></td></tr></table></figure>
+
+<p>如果原镜像是几十 GB：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">17KB</span><br></pre></td></tr></table></figure>
+
+<p>显然不正常。</p>
+<p>恢复以后应该是：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">GB 级</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="2-检查-Blob-数量"><a href="#2-检查-Blob-数量" class="headerlink" title="2. 检查 Blob 数量"></a>2. 检查 Blob 数量</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">tar -tf openaivllm-amd64.tar \</span><br><span class="line">  | grep <span class="string">&#x27;^blobs/sha256/&#x27;</span> \</span><br><span class="line">  | <span class="built_in">wc</span> -l</span><br></pre></td></tr></table></figure>
+
+<p>原来的异常镜像只有极少量 Blob。</p>
+<p>正常的大型 vLLM 镜像应该存在大量：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">blobs/sha256/xxxxxxxx</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="3-查看归档内容"><a href="#3-查看归档内容" class="headerlink" title="3. 查看归档内容"></a>3. 查看归档内容</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">tar -tf openaivllm-amd64.tar | <span class="built_in">head</span> -50</span><br></pre></td></tr></table></figure>
+
+<p>应该能够看到大量：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">blobs/sha256/xxxx</span><br><span class="line">blobs/sha256/xxxx</span><br><span class="line">blobs/sha256/xxxx</span><br><span class="line">...</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h2 id="4-计算-SHA256"><a href="#4-计算-SHA256" class="headerlink" title="4. 计算 SHA256"></a>4. 计算 SHA256</h2><p>在线机器：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">sha256sum</span> openaivllm-amd64.tar</span><br></pre></td></tr></table></figure>
+
+<p>复制到离线环境以后：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">sha256sum</span> openaivllm-amd64.tar</span><br></pre></td></tr></table></figure>
+
+<p>两边结果应该完全一致。</p>
+<p>这样可以排除移动硬盘、U盘、网络传输等过程导致的大文件损坏。</p>
+<hr>
+<h1 id="十、备用方案：关闭-containerd-image-store"><a href="#十、备用方案：关闭-containerd-image-store" class="headerlink" title="十、备用方案：关闭 containerd image store"></a>十、备用方案：关闭 containerd image store</h1><p>Moby #52193 中还提到：</p>
+<p>关闭 Docker Desktop 中的：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">Use containerd for pulling and storing images</span><br></pre></td></tr></table></figure>
+
+<p>以后，<code>docker save</code> 可以恢复正常。</p>
+<p>Docker Desktop 可以进入：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">Settings</span><br><span class="line">→ General</span><br><span class="line">→ Use containerd for pulling and storing images</span><br></pre></td></tr></table></figure>
+
+<p>取消该选项。</p>
+<p>Docker 官方关于 containerd image store 的说明：</p>
+<p><a target="_blank" rel="noopener" href="https://docs.docker.com/desktop/features/containerd/">https://docs.docker.com/desktop/features/containerd/</a></p>
+<p>需要注意的是：</p>
+<blockquote>
+<p>classic image store 与 containerd image store 是两套独立的镜像存储。</p>
+</blockquote>
+<p>因此切换以后，之前的镜像可能暂时不会出现在：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker images</span><br></pre></td></tr></table></figure>
+
+<p>中。</p>
+<p>这并不代表镜像被删除。</p>
+<p>重新切回原来的 image store 后又可以看到。</p>
+<p>如果镜像有：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">20GB</span><br><span class="line">30GB</span><br><span class="line">40GB</span><br></pre></td></tr></table></figure>
+
+<p>那么切换 image store 后重新 <code>docker pull</code> 的成本比较高。</p>
+<p>所以对于这种大型 AI&#x2F;CUDA 镜像，我更推荐优先尝试：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">空 Build</span><br></pre></td></tr></table></figure>
+
+<p>成功以后直接：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker save</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h1 id="十一、推荐排查流程"><a href="#十一、推荐排查流程" class="headerlink" title="十一、推荐排查流程"></a>十一、推荐排查流程</h1><p>以后遇到类似问题，可以按照：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br></pre></td><td class="code"><pre><span class="line">docker save 文件异常小</span><br><span class="line">          │</span><br><span class="line">          ▼</span><br><span class="line">tar -tf 检查内容</span><br><span class="line">          │</span><br><span class="line">          ▼</span><br><span class="line">是否只有 Manifest / Metadata？</span><br><span class="line">          │</span><br><span class="line">         Yes</span><br><span class="line">          │</span><br><span class="line">          ▼</span><br><span class="line">检查 docker version</span><br><span class="line">检查 containerd version</span><br><span class="line">          │</span><br><span class="line">          ▼</span><br><span class="line">docker save --platform</span><br><span class="line">          │</span><br><span class="line">          ▼</span><br><span class="line">是否提示 platform 不存在？</span><br><span class="line">          │</span><br><span class="line">         Yes</span><br><span class="line">          │</span><br><span class="line">          ▼</span><br><span class="line">执行一次空 Build</span><br><span class="line">          │</span><br><span class="line">          ▼</span><br><span class="line">docker save 新镜像</span><br><span class="line">          │</span><br><span class="line">      ┌───┴────┐</span><br><span class="line">      │        │</span><br><span class="line">    成功      失败</span><br><span class="line">      │        │</span><br><span class="line">      ▼        ▼</span><br><span class="line">   完成     关闭 containerd</span><br><span class="line">             image store</span><br><span class="line">                │</span><br><span class="line">                ▼</span><br><span class="line">             重新 pull</span><br><span class="line">                │</span><br><span class="line">                ▼</span><br><span class="line">             docker save</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h1 id="十二、最终可直接使用的命令"><a href="#十二、最终可直接使用的命令" class="headerlink" title="十二、最终可直接使用的命令"></a>十二、最终可直接使用的命令</h1><p>如果以后再次遇到类似情况，可以直接尝试：</p>
+<h2 id="1-重新生成本地镜像"><a href="#1-重新生成本地镜像" class="headerlink" title="1. 重新生成本地镜像"></a>1. 重新生成本地镜像</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">docker build \</span><br><span class="line">  --platform=linux/amd64 \</span><br><span class="line">  -t vllm/vllm-openai:offline \</span><br><span class="line">  - &lt;&lt;<span class="string">&#x27;EOF&#x27;</span></span><br><span class="line">FROM vllm/vllm-openai:latest</span><br><span class="line">EOF</span><br></pre></td></tr></table></figure>
+
+<h2 id="2-导出-amd64-镜像"><a href="#2-导出-amd64-镜像" class="headerlink" title="2. 导出 amd64 镜像"></a>2. 导出 amd64 镜像</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">docker image save \</span><br><span class="line">  --platform=linux/amd64 \</span><br><span class="line">  -o openaivllm-amd64.tar \</span><br><span class="line">  vllm/vllm-openai:offline</span><br></pre></td></tr></table></figure>
+
+<h2 id="3-检查文件大小"><a href="#3-检查文件大小" class="headerlink" title="3. 检查文件大小"></a>3. 检查文件大小</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">du</span> -h openaivllm-amd64.tar</span><br></pre></td></tr></table></figure>
+
+<h2 id="4-检查-Blob"><a href="#4-检查-Blob" class="headerlink" title="4. 检查 Blob"></a>4. 检查 Blob</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">tar -tf openaivllm-amd64.tar \</span><br><span class="line">  | grep <span class="string">&#x27;^blobs/sha256/&#x27;</span> \</span><br><span class="line">  | <span class="built_in">wc</span> -l</span><br></pre></td></tr></table></figure>
+
+<h2 id="5-生成-SHA256"><a href="#5-生成-SHA256" class="headerlink" title="5. 生成 SHA256"></a>5. 生成 SHA256</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="built_in">sha256sum</span> openaivllm-amd64.tar</span><br></pre></td></tr></table></figure>
+
+<h2 id="6-离线机器加载"><a href="#6-离线机器加载" class="headerlink" title="6. 离线机器加载"></a>6. 离线机器加载</h2><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker load -i openaivllm-amd64.tar</span><br></pre></td></tr></table></figure>
+
+<hr>
+<h1 id="十三、总结"><a href="#十三、总结" class="headerlink" title="十三、总结"></a>十三、总结</h1><p>这次问题最具有迷惑性的地方在于：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker images</span><br></pre></td></tr></table></figure>
+
+<p>明明显示：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">约 30GB</span><br></pre></td></tr></table></figure>
+
+<p>但：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker save</span><br></pre></td></tr></table></figure>
+
+<p>却只生成：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">约 17KB</span><br></pre></td></tr></table></figure>
+
+<p>进一步检查 OCI archive 后发现，17KB 文件基本只有：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">OCI Index</span><br><span class="line">Manifest</span><br><span class="line">Metadata</span><br></pre></td></tr></table></figure>
+
+<p>真正几十 GB 的 filesystem layer 并没有进入 tar。</p>
+<p>同时：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">docker save --platform=linux/amd64</span><br></pre></td></tr></table></figure>
+
+<p>还出现：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">image ... was found but does not provide the specified platform</span><br></pre></td></tr></table></figure>
+
+<p>但是 Manifest List 明明声明存在：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">linux/amd64</span><br></pre></td></tr></table></figure>
+
+<p>结合：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">Docker Engine 29.2.0</span><br><span class="line">Docker Desktop 4.59.0</span><br><span class="line">containerd 2.2.1</span><br></pre></td></tr></table></figure>
+
+<p>以及 Moby 官方 Issue #52193，可以判断该问题与 Docker 29.2 下 containerd image store 的 <code>docker save</code> Bug 高度一致。</p>
+<p>最终解决方法非常简单：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line">docker build \</span><br><span class="line">  --platform=linux/amd64 \</span><br><span class="line">  -t vllm/vllm-openai:offline \</span><br><span class="line">  - &lt;&lt;<span class="string">&#x27;EOF&#x27;</span></span><br><span class="line">FROM vllm/vllm-openai:latest</span><br><span class="line">EOF</span><br></pre></td></tr></table></figure>
+
+<p>然后重新：</p>
+<figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">docker image save \</span><br><span class="line">  --platform=linux/amd64 \</span><br><span class="line">  -o openaivllm-amd64.tar \</span><br><span class="line">  vllm/vllm-openai:offline</span><br></pre></td></tr></table></figure>
+
+<p>即可恢复正常。</p>
+<p>对于几十 GB 的 vLLM、PyTorch、CUDA 等大型 AI 镜像，这种方案最大的优点是：</p>
+<blockquote>
+<p><strong>通常不需要重新下载整个镜像，就能解决 <code>docker save</code> 缺少 Layer 的问题。</strong></p>
+</blockquote>
+<hr>
+<h1 id="十四、参考资料"><a href="#十四、参考资料" class="headerlink" title="十四、参考资料"></a>十四、参考资料</h1><h2 id="Moby-官方-Issue"><a href="#Moby-官方-Issue" class="headerlink" title="Moby 官方 Issue"></a>Moby 官方 Issue</h2><p><strong>#52193 - c8d storage issue with <code>docker save</code> after <code>docker pull</code></strong></p>
+<p><a target="_blank" rel="noopener" href="https://github.com/moby/moby/issues/52193">https://github.com/moby/moby/issues/52193</a></p>
+<h2 id="Moby-相关历史-Issue"><a href="#Moby-相关历史-Issue" class="headerlink" title="Moby 相关历史 Issue"></a>Moby 相关历史 Issue</h2><p><strong>#47065 - <code>[v25] docker save produces an OCI manifest with no layers</code></strong></p>
+<p><a target="_blank" rel="noopener" href="https://github.com/moby/moby/issues/47065">https://github.com/moby/moby/issues/47065</a></p>
+<h2 id="Docker-官方文档：containerd-image-store"><a href="#Docker-官方文档：containerd-image-store" class="headerlink" title="Docker 官方文档：containerd image store"></a>Docker 官方文档：containerd image store</h2><p><a target="_blank" rel="noopener" href="https://docs.docker.com/desktop/features/containerd/">https://docs.docker.com/desktop/features/containerd/</a></p>
+<h2 id="Docker-官方文档：docker-image-save"><a href="#Docker-官方文档：docker-image-save" class="headerlink" title="Docker 官方文档：docker image save"></a>Docker 官方文档：docker image save</h2><p><a target="_blank" rel="noopener" href="https://docs.docker.com/reference/cli/docker/image/save/">https://docs.docker.com/reference/cli/docker/image/save/</a></p>
+<h2 id="Docker-官方文档：docker-image-load"><a href="#Docker-官方文档：docker-image-load" class="headerlink" title="Docker 官方文档：docker image load"></a>Docker 官方文档：docker image load</h2><p><a target="_blank" rel="noopener" href="https://docs.docker.com/reference/cli/docker/image/load/">https://docs.docker.com/reference/cli/docker/image/load/</a></p>
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/cnblogs-22676309/">上一篇：DeepSeek Harness 服务化改造实践</a><a href="/posts/cnblogs-19534381/">下一篇：dify内网环境离线安装插件（附改造后的脚本）</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%80%E3%80%81%E9%97%AE%E9%A2%98%E8%83%8C%E6%99%AF"><span class="toc-number">1.</span> <span class="toc-text">一、问题背景</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%8C%E3%80%81%E7%B3%BB%E7%BB%9F%E7%8E%AF%E5%A2%83"><span class="toc-number">2.</span> <span class="toc-text">二、系统环境</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#Docker-Client"><span class="toc-number">2.1.</span> <span class="toc-text">Docker Client</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#Docker-Server"><span class="toc-number">2.2.</span> <span class="toc-text">Docker Server</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#containerd"><span class="toc-number">2.3.</span> <span class="toc-text">containerd</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#runc"><span class="toc-number">2.4.</span> <span class="toc-text">runc</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E4%B8%89%E3%80%81%E5%BC%82%E5%B8%B8%E7%8E%B0%E8%B1%A1"><span class="toc-number">3.</span> <span class="toc-text">三、异常现象</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%9B%9B%E3%80%81%E8%BF%9B%E4%B8%80%E6%AD%A5%E5%88%86%E6%9E%90-Manifest"><span class="toc-number">4.</span> <span class="toc-text">四、进一步分析 Manifest</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E4%BA%94%E3%80%81%E5%AE%98%E6%96%B9-Issue"><span class="toc-number">5.</span> <span class="toc-text">五、官方 Issue</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%85%AD%E3%80%81%E7%9C%9F%E6%AD%A3%E6%9C%89%E6%95%88%E7%9A%84%E8%A7%A3%E5%86%B3%E6%96%B9%E6%A1%88"><span class="toc-number">6.</span> <span class="toc-text">六、真正有效的解决方案</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E4%B8%83%E3%80%81%E4%B8%BA%E4%BB%80%E4%B9%88%E4%B8%80%E6%AC%A1%E2%80%9C%E7%A9%BA-Build%E2%80%9D%E8%83%BD%E5%A4%9F%E8%A7%A3%E5%86%B3%E9%97%AE%E9%A2%98%EF%BC%9F"><span class="toc-number">7.</span> <span class="toc-text">七、为什么一次“空 Build”能够解决问题？</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%85%AB%E3%80%81%E5%A6%82%E4%BD%95%E7%A1%AE%E8%AE%A4%E8%87%AA%E5%B7%B1%E9%81%87%E5%88%B0%E7%9A%84%E6%98%AF%E5%90%8C%E4%B8%80%E4%B8%AA%E9%97%AE%E9%A2%98%EF%BC%9F"><span class="toc-number">8.</span> <span class="toc-text">八、如何确认自己遇到的是同一个问题？</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E4%B9%9D%E3%80%81%E5%AF%BC%E5%87%BA%E4%BB%A5%E5%90%8E%E4%B8%80%E5%AE%9A%E8%A6%81%E8%BF%9B%E8%A1%8C%E9%AA%8C%E8%AF%81"><span class="toc-number">9.</span> <span class="toc-text">九、导出以后一定要进行验证</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#1-%E6%A3%80%E6%9F%A5%E6%96%87%E4%BB%B6%E5%A4%A7%E5%B0%8F"><span class="toc-number">9.1.</span> <span class="toc-text">1. 检查文件大小</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#2-%E6%A3%80%E6%9F%A5-Blob-%E6%95%B0%E9%87%8F"><span class="toc-number">9.2.</span> <span class="toc-text">2. 检查 Blob 数量</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#3-%E6%9F%A5%E7%9C%8B%E5%BD%92%E6%A1%A3%E5%86%85%E5%AE%B9"><span class="toc-number">9.3.</span> <span class="toc-text">3. 查看归档内容</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#4-%E8%AE%A1%E7%AE%97-SHA256"><span class="toc-number">9.4.</span> <span class="toc-text">4. 计算 SHA256</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%8D%81%E3%80%81%E5%A4%87%E7%94%A8%E6%96%B9%E6%A1%88%EF%BC%9A%E5%85%B3%E9%97%AD-containerd-image-store"><span class="toc-number">10.</span> <span class="toc-text">十、备用方案：关闭 containerd image store</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%8D%81%E4%B8%80%E3%80%81%E6%8E%A8%E8%8D%90%E6%8E%92%E6%9F%A5%E6%B5%81%E7%A8%8B"><span class="toc-number">11.</span> <span class="toc-text">十一、推荐排查流程</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%8D%81%E4%BA%8C%E3%80%81%E6%9C%80%E7%BB%88%E5%8F%AF%E7%9B%B4%E6%8E%A5%E4%BD%BF%E7%94%A8%E7%9A%84%E5%91%BD%E4%BB%A4"><span class="toc-number">12.</span> <span class="toc-text">十二、最终可直接使用的命令</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#1-%E9%87%8D%E6%96%B0%E7%94%9F%E6%88%90%E6%9C%AC%E5%9C%B0%E9%95%9C%E5%83%8F"><span class="toc-number">12.1.</span> <span class="toc-text">1. 重新生成本地镜像</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#2-%E5%AF%BC%E5%87%BA-amd64-%E9%95%9C%E5%83%8F"><span class="toc-number">12.2.</span> <span class="toc-text">2. 导出 amd64 镜像</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#3-%E6%A3%80%E6%9F%A5%E6%96%87%E4%BB%B6%E5%A4%A7%E5%B0%8F"><span class="toc-number">12.3.</span> <span class="toc-text">3. 检查文件大小</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#4-%E6%A3%80%E6%9F%A5-Blob"><span class="toc-number">12.4.</span> <span class="toc-text">4. 检查 Blob</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#5-%E7%94%9F%E6%88%90-SHA256"><span class="toc-number">12.5.</span> <span class="toc-text">5. 生成 SHA256</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#6-%E7%A6%BB%E7%BA%BF%E6%9C%BA%E5%99%A8%E5%8A%A0%E8%BD%BD"><span class="toc-number">12.6.</span> <span class="toc-text">6. 离线机器加载</span></a></li></ol></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%8D%81%E4%B8%89%E3%80%81%E6%80%BB%E7%BB%93"><span class="toc-number">13.</span> <span class="toc-text">十三、总结</span></a></li><li class="toc-item toc-level-1"><a class="toc-link" href="#%E5%8D%81%E5%9B%9B%E3%80%81%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99"><span class="toc-number">14.</span> <span class="toc-text">十四、参考资料</span></a><ol class="toc-child"><li class="toc-item toc-level-2"><a class="toc-link" href="#Moby-%E5%AE%98%E6%96%B9-Issue"><span class="toc-number">14.1.</span> <span class="toc-text">Moby 官方 Issue</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Moby-%E7%9B%B8%E5%85%B3%E5%8E%86%E5%8F%B2-Issue"><span class="toc-number">14.2.</span> <span class="toc-text">Moby 相关历史 Issue</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Docker-%E5%AE%98%E6%96%B9%E6%96%87%E6%A1%A3%EF%BC%9Acontainerd-image-store"><span class="toc-number">14.3.</span> <span class="toc-text">Docker 官方文档：containerd image store</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Docker-%E5%AE%98%E6%96%B9%E6%96%87%E6%A1%A3%EF%BC%9Adocker-image-save"><span class="toc-number">14.4.</span> <span class="toc-text">Docker 官方文档：docker image save</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#Docker-%E5%AE%98%E6%96%B9%E6%96%87%E6%A1%A3%EF%BC%9Adocker-image-load"><span class="toc-number">14.5.</span> <span class="toc-text">Docker 官方文档：docker image load</span></a></li></ol></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>
