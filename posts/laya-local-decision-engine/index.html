@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>从 Jev 到 Laya：搭建面向智能体的本地决策引擎 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link rel="stylesheet" href="/css/rebel.css"><script defer src="/js/rebel.js"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header"><a class="brand" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class="" href="/">首页</a><a class="" href="/archives/">归档</a><a href="/about/">关于</a><button class="search-open" type="button">搜索 <span>⌕</span></button></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2026-09-28T16:00:00.000Z">2026.09.29</time><span>April</span></div><h1>从 Jev 到 Laya：搭建面向智能体的本地决策引擎</h1><a class="tag" href="/tags/Laya/"># Laya</a><a class="tag" href="/tags/Jev/"># Jev</a><a class="tag" href="/tags/%E6%99%BA%E8%83%BD%E4%BD%93/"># 智能体</a><a class="tag" href="/tags/%E6%84%8F%E5%9B%BE%E8%AF%86%E5%88%AB/"># 意图识别</a><a class="tag" href="/tags/%E5%86%B3%E7%AD%96%E5%BC%95%E6%93%8E/"># 决策引擎</a></section><div class="reading-grid"><article class="prose"><p>在搭建智能体时，我们经常把不同性质的任务交给同一个大模型：理解用户需求、选择工具、判断紧急程度、生成答案，甚至决定要不要继续执行。</p>
+<p>其中一些任务需要开放式推理，但另一些问题的答案其实早已确定在一个有限集合里。例如，一条请求应该进入知识库问答、账单处理还是技术支持？工具执行失败后应该重试、追问还是转人工？</p>
+<p>这类判断可以独立成服务。本文结合 Jev 的 System One 思路，以及已经搭建的本地 <code>laya-api</code>，介绍如何把 Laya 用作智能体前面的决策层。</p>
+<h2 id="一、为什么要把“判断”单独拆出来"><a href="#一、为什么要把“判断”单独拆出来" class="headerlink" title="一、为什么要把“判断”单独拆出来"></a>一、为什么要把“判断”单独拆出来</h2><p>假设用户说：</p>
+<blockquote>
+<p>我被重复扣款了，请尽快退款。</p>
+</blockquote>
+<p>一个客服系统至少要完成四件事：识别问题属于哪个业务领域、判断是否包含退款意图、决定处理优先级，以及回复用户。</p>
+<p>前三件事可以拆成结构化判断；最后一件事通常仍然需要生成式模型。拆开之后，我们可以分别修改分类标准、评估误判和调整执行策略。</p>
+<table>
+<thead>
+<tr>
+<th>工作</th>
+<th>适合的处理方式</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>语义分类</td>
+<td>决策模型</td>
+<td>账单、技术支持、销售咨询</td>
+</tr>
+<tr>
+<td>明确规则校验</td>
+<td>普通代码</td>
+<td>用户是否拥有查询该订单的权限</td>
+</tr>
+<tr>
+<td>外部数据读取</td>
+<td>业务接口</td>
+<td>订单是否确实发生重复扣款</td>
+</tr>
+<tr>
+<td>回答组织</td>
+<td>生成式大模型</td>
+<td>解释查询结果并说明后续步骤</td>
+</tr>
+</tbody></table>
+<p>这里的目标不是把所有工作都交给小模型，而是让每一步的输入、输出和责任更明确。</p>
+<h2 id="二、Jev-的原理：从生成文本到输出决策"><a href="#二、Jev-的原理：从生成文本到输出决策" class="headerlink" title="二、Jev 的原理：从生成文本到输出决策"></a>二、Jev 的原理：从生成文本到输出决策</h2><p>TypeSafe 将 Jev 定位为 System One 模型：输入状态和预定义问题，返回类型化答案及概率。官方介绍强调并行输出决策，以及面向概率校准的训练方法 RLCD。它不靠生成一段解释文字来交付结果。<a target="_blank" rel="noopener" href="https://typesafe.ai/blog/introducing-system-one-models-and-jev">来源：TypeSafe 官方介绍</a></p>
+<p>可以把其接口思路概括为：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br></pre></td><td class="code"><pre><span class="line">状态 + 判断问题 + 允许的答案</span><br><span class="line">             ↓</span><br><span class="line">      类型化结果与概率</span><br><span class="line">             ↓</span><br><span class="line">      程序选择后续分支</span><br></pre></td></tr></table></figure>
+
+<p>RLCD 的全称是 Reinforcement Learning for Calibrated Decisions。理解“校准”可以用一个统计例子：如果模型对一批判断都报出约 80% 的正确把握，理想情况下，这批判断的实际正确比例也应接近 80%。这是群体统计性质，不是对某个请求的正确性担保。</p>
+<p>公开资料能够支持上述接口与训练目标描述，但不足以完整还原 Jev 的网络结构和训练过程。因此，不能把 Jev 直接描述成某一种 BERT 分类器。</p>
+<p>另一个容易混淆的概念是“不会产生非法输出”和“不会判断错误”。当选项只有 <code>billing</code>、<code>technical</code>、<code>sales</code> 时，模型可以被限制为只返回其中一个值，但仍有可能选错。接入业务时，类型校验与语义评估都需要保留。</p>
+<p>LangChain 的实践展示了这类决策如何进入智能体循环：通过分类器或中间件处理模型路由、工具调用检查等限定任务。对本文而言，最有价值的是这种职责拆分，而不是某个宣传中的速度倍数。<a target="_blank" rel="noopener" href="https://www.langchain.com/blog/building-a-harness-with-jev">来源：Building a Harness with Jev</a></p>
+<h2 id="三、为什么选择-Laya-做本地实践"><a href="#三、为什么选择-Laya-做本地实践" class="headerlink" title="三、为什么选择 Laya 做本地实践"></a>三、为什么选择 Laya 做本地实践</h2><p>Laya 提供开放权重，模型卡标注 Apache-2.0 许可，并提供英文、多语言和特定决策任务版本。它采用非自回归的决策路线，而不是逐字生成回复。<a target="_blank" rel="noopener" href="https://huggingface.co/convaiinnovations/laya">来源：Laya 模型卡</a></p>
+<p>对这个项目，优势主要体现在以下几个方面。</p>
+<p><strong>第一，部署位置可以自己控制。</strong> 当前服务从本地目录读取权重，并开启 Hugging Face 和 Transformers 离线模式。权重与依赖准备完毕后，推理不必依赖外部模型 API。这与需要内网部署的场景比较匹配。</p>
+<p><strong>第二，业务接口比较直接。</strong> 调用方定义选项，服务返回分类、评分或是非概率，接入端不用再从自然语言回答中提取部门名称。</p>
+<p><strong>第三，可以为中文请求选择多语言权重。</strong> 当前项目启动时预加载 <code>multilingual</code>，并允许调用方显式指定版本。相比只加载一个英文模型，这让语言选择成为可控制、可记录的一步。</p>
+<p><strong>第四，可以在不重写服务的情况下调整问题定义。</strong> <code>questions</code> 由请求传入，部门分类可以换成智能体路由或知识库选择。不过，改变候选项不等于模型已经学会新的业务边界，仍然需要重新评估。</p>
+<p>这些优势并不意味着 Laya 的所有判断都比 Jev 或通用大模型准确。这里选择它，是因为开放权重、本地运行和结构化接口适合当前实践；效果高低需要用同一批业务样本比较。</p>
+<h2 id="四、现有-laya-api-实际做了什么"><a href="#四、现有-laya-api-实际做了什么" class="headerlink" title="四、现有 laya-api 实际做了什么"></a>四、现有 laya-api 实际做了什么</h2><p>项目结构很轻量：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line">laya-api/</span><br><span class="line">├── server.py              # 加载本地模型并创建 HTTP 服务</span><br><span class="line">├── client.py              # 标准库 HTTP 客户端</span><br><span class="line">├── start.ps1 / stop.ps1   # 启停脚本</span><br><span class="line">├── install.ps1            # 环境安装脚本</span><br><span class="line">├── smoke_test.py          # 集成检查</span><br><span class="line">├── verification.json      # 已保存的检查结果</span><br><span class="line">└── requirements*.txt      # 依赖与版本记录</span><br></pre></td></tr></table></figure>
+
+<p><code>server.py</code> 使用 Laya SDK 的 <code>Router</code> 和 <code>create_app</code>，复用其 HTTP 服务能力，并额外提供 <code>/v1/decide</code> 路径。当前固定的直接依赖包括 <code>laya[serve]==0.3.21</code>、<code>transformers==4.57.6</code> 和 <code>httpx==0.28.1</code>。</p>
+<p>模型目录布局如下：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br></pre></td><td class="code"><pre><span class="line">F:\laya\</span><br><span class="line">├── 根目录权重             # english</span><br><span class="line">├── multilingual\         # 多语言</span><br><span class="line">└── typed-decisions\      # 特定决策任务版本</span><br></pre></td></tr></table></figure>
+
+<p>服务启动前会检查三套目录中的必要文件。虽然不是所有模型都会立即加载，但当前实现要求三套权重文件都准备齐全。</p>
+<p>核心配置包括：</p>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>当前实现</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>默认地址</td>
+<td><code>http://127.0.0.1:8000</code></td>
+</tr>
+<tr>
+<td>推理接口</td>
+<td><code>POST /v1/decide</code>，兼容路径 <code>/v1/systemone</code></td>
+</tr>
+<tr>
+<td>交互文档</td>
+<td><code>/docs</code></td>
+</tr>
+<tr>
+<td>健康检查</td>
+<td><code>/health</code></td>
+</tr>
+<tr>
+<td>启动预加载</td>
+<td><code>multilingual</code></td>
+</tr>
+<tr>
+<td>默认驻留模型数</td>
+<td>2</td>
+</tr>
+<tr>
+<td>推理配置</td>
+<td>默认请求 CUDA，<code>fast=False</code>、<code>compile=False</code></td>
+</tr>
+<tr>
+<td>请求 token 上限配置</td>
+<td>默认 <code>LAYA_MAX_TOKEN_BUDGET=2048</code></td>
+</tr>
+<tr>
+<td>访问控制</td>
+<td>设置 <code>LAYA_API_KEY</code> 后使用 Bearer 认证</td>
+</tr>
+</tbody></table>
+<p><strong>这里有两种不同的“路由”。</strong> Laya 的 <code>Router</code> 选择的是英文或多语言等模型权重；业务路由选择的才是账单智能体、技术支持智能体或某个工作流。前者已经实现，后者需要调用方根据返回结果编排。</p>
+<p>在项目目录运行：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">.\start.ps1</span><br></pre></td></tr></table></figure>
+
+<p>然后打开 <code>/docs</code> 即可测试。需要 CPU 运行时，现有脚本也支持：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">.\start.ps1 <span class="literal">-Port</span> <span class="number">8001</span> <span class="literal">-Device</span> cpu</span><br></pre></td></tr></table></figure>
+
+<p>这些是现有服务的使用方式，不是从零安装教程；在新机器复现前，需要按照项目 README 准备 Conda 环境和本地权重。</p>
+<h2 id="五、用一条请求同时完成三种判断"><a href="#五、用一条请求同时完成三种判断" class="headerlink" title="五、用一条请求同时完成三种判断"></a>五、用一条请求同时完成三种判断</h2><p>以下是面向当前 <code>/v1/decide</code> 接口的请求示例，问题 ID 和中文说明由调用方定义：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;state&quot;</span><span class="punctuation">:</span> <span class="string">&quot;我被重复扣款了，请尽快退款。&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;model&quot;</span><span class="punctuation">:</span> <span class="string">&quot;multilingual&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;questions&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">    <span class="attr">&quot;department&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">      <span class="attr">&quot;type&quot;</span><span class="punctuation">:</span> <span class="string">&quot;choice&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;instructions&quot;</span><span class="punctuation">:</span> <span class="string">&quot;应该交给哪个部门处理？&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;criteria&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">        <span class="attr">&quot;billing&quot;</span><span class="punctuation">:</span> <span class="string">&quot;账单、付款和退款&quot;</span><span class="punctuation">,</span></span><br><span class="line">        <span class="attr">&quot;technical&quot;</span><span class="punctuation">:</span> <span class="string">&quot;软件故障和技术问题&quot;</span><span class="punctuation">,</span></span><br><span class="line">        <span class="attr">&quot;sales&quot;</span><span class="punctuation">:</span> <span class="string">&quot;购买咨询&quot;</span><span class="punctuation">,</span></span><br><span class="line">        <span class="attr">&quot;other&quot;</span><span class="punctuation">:</span> <span class="string">&quot;以上均不适用，或信息不足以判断&quot;</span></span><br><span class="line">      <span class="punctuation">&#125;</span></span><br><span class="line">    <span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;urgency&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">      <span class="attr">&quot;type&quot;</span><span class="punctuation">:</span> <span class="string">&quot;score&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;instructions&quot;</span><span class="punctuation">:</span> <span class="string">&quot;请求有多紧急？&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;criteria&quot;</span><span class="punctuation">:</span> <span class="punctuation">[</span><span class="string">&quot;不紧急&quot;</span><span class="punctuation">,</span> <span class="string">&quot;需要尽快处理&quot;</span><span class="punctuation">,</span> <span class="string">&quot;严重紧急&quot;</span><span class="punctuation">]</span></span><br><span class="line">    <span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;refund_requested&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">      <span class="attr">&quot;type&quot;</span><span class="punctuation">:</span> <span class="string">&quot;noul&quot;</span><span class="punctuation">,</span></span><br><span class="line">      <span class="attr">&quot;instructions&quot;</span><span class="punctuation">:</span> <span class="string">&quot;用户是否明确要求退款？&quot;</span></span><br><span class="line">    <span class="punctuation">&#125;</span></span><br><span class="line">  <span class="punctuation">&#125;</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>三种问题对应三个不同用途：</p>
+<p>示例加入了 <code>other</code>，让模型有机会表达“不属于已定义类别”。这只是一个候选项，不是可靠拒判机制；还需要在后续策略中处理不确定结果。</p>
+<p>本项目已有验证记录使用的是<strong>三个部门选项、英文问题说明和中文用户输入</strong>，与上面新增加 <code>other</code> 的请求不同。记录中部门判断的实际响应节选如下：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;choice&quot;</span><span class="punctuation">:</span> <span class="string">&quot;billing&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;probabilities&quot;</span><span class="punctuation">:</span> <span class="punctuation">&#123;</span></span><br><span class="line">    <span class="attr">&quot;billing&quot;</span><span class="punctuation">:</span> <span class="number">0.982</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;technical&quot;</span><span class="punctuation">:</span> <span class="number">0.0091</span><span class="punctuation">,</span></span><br><span class="line">    <span class="attr">&quot;sales&quot;</span><span class="punctuation">:</span> <span class="number">0.0088</span></span><br><span class="line">  <span class="punctuation">&#125;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;confidence&quot;</span><span class="punctuation">:</span> <span class="number">0.9068</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;answer_confidence&quot;</span><span class="punctuation">:</span> <span class="number">0.982</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>这条记录说明服务能够将该中文请求识别为账单问题。它不能证明所有退款请求都会得到正确结果，也不能作为新问题配置的测试结果。</p>
+<p>还要注意，<code>confidence</code> 与 <code>answer_confidence</code> 的数值不同，不能混用。接入时应确认当前 SDK 对字段的定义，选择固定的指标做验证，再据此设阈值。本项目 README 也注明，<code>action.act_probability</code> 暂无可靠信号，不应拿它直接决定是否执行。</p>
+<h2 id="六、从模型服务到决策引擎"><a href="#六、从模型服务到决策引擎" class="headerlink" title="六、从模型服务到决策引擎"></a>六、从模型服务到决策引擎</h2><p>一个可以返回分类结果的 API，是决策引擎的基础，但还不是完整引擎。</p>
+<p>在本文的设计中，决策引擎包含三部分：模型提供语义判断，策略代码决定如何使用判断，执行适配层连接真正的业务系统。</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line">用户输入 + 必要的会话上下文</span><br><span class="line">              │</span><br><span class="line">              ▼</span><br><span class="line">      输入整理与候选范围确定</span><br><span class="line">              │</span><br><span class="line">              ▼</span><br><span class="line">      Laya：分类、评分、概率</span><br><span class="line">              │</span><br><span class="line">              ▼</span><br><span class="line">      策略层：检查结果与条件</span><br><span class="line">       ├─ 信息不足 → 追问</span><br><span class="line">       ├─ 判断不稳 → 大模型复核或人工处理</span><br><span class="line">       └─ 条件满足 → 指定智能体 / 工作流</span><br><span class="line">                            │</span><br><span class="line">                            ▼</span><br><span class="line">                    业务接口执行与反馈</span><br></pre></td></tr></table></figure>
+
+<p>这与 LangGraph 文章里“模型负责限定判断、代码负责工作流”的思路相近。LangGraph 可以承担编排，但不是这一架构的必要依赖；当前服务仍是独立 HTTP API。<a target="_blank" rel="noopener" href="https://www.langchain.com/blog/building-prod-with-jev-and-langgraph">来源：Building Prod with Jev and LangGraph</a></p>
+<h3 id="1-先定义意图的边界"><a href="#1-先定义意图的边界" class="headerlink" title="1. 先定义意图的边界"></a>1. 先定义意图的边界</h3><p>“账单问题”和“退款请求”不是互斥概念：前者是业务领域，后者是具体动作意图。如果把它们并列在同一个单选问题中，模型的答案会变得难以解释。</p>
+<p>一种更清晰的设计是分别判断：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+<th>候选或输出</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>domain</code></td>
+<td>涉及哪个业务领域</td>
+<td>账单、技术、销售、其他</td>
+</tr>
+<tr>
+<td><code>refund_requested</code></td>
+<td>是否要求退款</td>
+<td>是的概率</td>
+</tr>
+<tr>
+<td><code>needs_clarification</code></td>
+<td>信息是否不足</td>
+<td>是的概率</td>
+</tr>
+<tr>
+<td><code>urgency</code></td>
+<td>需要多快响应</td>
+<td>有序评分</td>
+</tr>
+</tbody></table>
+<p>如果用户同时提出“查询账单”和“修改发票”，可以通过多个独立是非问题识别多个意图，或者先按业务规则拆分任务。不要期待单个 <code>choice</code> 自动表达全部需求。</p>
+<h3 id="2-模型结果只是策略的输入"><a href="#2-模型结果只是策略的输入" class="headerlink" title="2. 模型结果只是策略的输入"></a>2. 模型结果只是策略的输入</h3><p>例如，策略层可以按以下顺序工作：</p>
+<p>这里不直接给出“超过 0.8 就自动执行”的通用规则。阈值应在标注样本上确定，而且“允许进入账单处理流程”和“允许实际退款”应是两种不同的策略。</p>
+<p>用户要求退款，只能证明存在这个意图。订单是否属于该用户、是否确实重复扣款、是否满足退款条件，都要由业务系统核实。</p>
+<h3 id="3-与-Dify-的接入方式"><a href="#3-与-Dify-的接入方式" class="headerlink" title="3. 与 Dify 的接入方式"></a>3. 与 Dify 的接入方式</h3><p>基于现有接口，可以设计一个 Dify 工作流：开始节点接收问题，HTTP 请求节点调用 <code>/v1/decide</code>，条件分支读取 <code>answers.department.choice</code> 等字段，再进入知识库问答或业务处理流程。</p>
+<p>这是接入方案，不是当前项目已完成的功能。部署时还要处理网络地址：Dify 如果运行在容器里，容器中的 <code>127.0.0.1</code> 并不指向宿主机上的 Laya 服务。需要使用容器可访问的宿主机或内网地址；对外监听时同步配置访问控制。</p>
+<h2 id="七、验证记录能说明什么"><a href="#七、验证记录能说明什么" class="headerlink" title="七、验证记录能说明什么"></a>七、验证记录能说明什么</h2><p>项目 README 记录的环境为 Python 3.11、PyTorch 2.10.0+cu128 和 RTX 5070 Ti。已有 <code>verification.json</code> 保存了以下请求结果：</p>
+<table>
+<thead>
+<tr>
+<th>输入与模型</th>
+<th>部门结果</th>
+<th align="right">服务端记录耗时</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>中文退款请求，自动路由到 multilingual</td>
+<td>billing</td>
+<td align="right">491.53 ms</td>
+</tr>
+<tr>
+<td>英文退款请求，自动路由到 english</td>
+<td>billing</td>
+<td align="right">1858.41 ms</td>
+</tr>
+<tr>
+<td>英文退款请求，显式 typed-decisions</td>
+<td>billing</td>
+<td align="right">1997.09 ms</td>
+</tr>
+</tbody></table>
+<p>这些时间来自响应头 <code>X-Inference-Time-Ms</code>，不是完整客户端往返时间。按照当前项目说明，该计时可能包含首次模型加载，因此不能由这三次调用推导稳定吞吐、平均延迟，或得出多语言版本总是更快的结论。</p>
+<p><code>smoke_test.py</code> 检查了模型路由、答案取值范围、错误请求、两个并发请求、兼容路径和 OpenAPI。它验证的是基本接口行为，并没有完成大规模意图分类准确率评估；其中部门分类的断言检查“是否属于允许选项”，并非完整的业务正确性判定。</p>
+<p>下一步我会优先补充一套业务评估集，覆盖：清晰意图、多意图、否定表达、指代、省略信息、无关输入，以及看起来像指令的用户原文。特别值得测试的是：</p>
+<blockquote>
+<p>我不是要退款，只想知道为什么扣了两次钱。</p>
+</blockquote>
+<p>这条输入仍然属于账单问题，但不应简单归为“明确要求退款”。</p>
+<p>评估时同时记录准确率、误路由率、需要复核的比例、冷启动与预热后的 P50&#x2F;P95 延迟。对于高风险动作，更应关注被错误放行的请求，而不只是总准确率。</p>
+<h2 id="八、当前实现的几个边界"><a href="#八、当前实现的几个边界" class="headerlink" title="八、当前实现的几个边界"></a>八、当前实现的几个边界</h2><p><strong>长上下文可能被截断。</strong> 当前服务的 <code>max_len</code> 请求上限默认配置为 2048，模型默认读取预算还可能更小。上游文档出现更长上下文支持，并不意味着本地服务已经按那个配置运行。传入完整聊天记录前，应先明确保留哪些用户话语和业务事实。</p>
+<p><strong>并发调用不代表并行推理。</strong> 当前方案按单进程推理队列组织请求；多启动几个 worker 可能重复加载模型。真实容量需要压测，不能用“两条并发请求成功”替代吞吐测试。</p>
+<p><strong>模型选择本身也需要检查。</strong> <code>/health</code> 中的 <code>checkpoint_devices</code> 与 <code>cpu_fallbacks</code> 能帮助确认是否实际使用 GPU。显存不足后的设备回退会改变延迟表现。</p>
+<p><strong>概率要和问题配置一起版本化。</strong> 候选描述、选项数量、模型版本和输入截断方式发生变化，都会影响结果。建议保存模型与问题配置版本、最终业务处理结果，便于复盘误判。</p>
+<p><strong>分类与事实核验应分开。</strong> 决策模型可以判断“用户是否声称已经付款”，但核验付款是否真实发生，仍应查询交易系统。</p>
+<h2 id="九、这次实践的收获"><a href="#九、这次实践的收获" class="headerlink" title="九、这次实践的收获"></a>九、这次实践的收获</h2><p>这次搭建完成的是一个可本地运行的 Laya 决策 API：输入用户状态和问题定义，输出可由程序读取的分类、评分与概率。</p>
+<p>它为后续智能体系统提供了一个可独立替换和评估的判断环节。下一步值得投入的工作，是定义清晰的意图边界、建立评估集，再把决策结果与真实业务流程连接起来。</p>
+<p>对我而言，决策引擎的价值在于让判断过程变得可观察、可调整：哪里适合模型处理语义，哪里需要确定性规则，哪里应该追问，都能在系统里明确表达出来。</p>
+<h2 id="参考资料"><a href="#参考资料" class="headerlink" title="参考资料"></a>参考资料</h2><p>资料核对日期：2026-09-29。模型与 SDK 更新较快，复现时应同时记录依赖版本、权重版本和问题配置。</p>
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/2026/09/28/hello-world/">下一篇：Hello World</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%80%E3%80%81%E4%B8%BA%E4%BB%80%E4%B9%88%E8%A6%81%E6%8A%8A%E2%80%9C%E5%88%A4%E6%96%AD%E2%80%9D%E5%8D%95%E7%8B%AC%E6%8B%86%E5%87%BA%E6%9D%A5"><span class="toc-number">1.</span> <span class="toc-text">一、为什么要把“判断”单独拆出来</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%8C%E3%80%81Jev-%E7%9A%84%E5%8E%9F%E7%90%86%EF%BC%9A%E4%BB%8E%E7%94%9F%E6%88%90%E6%96%87%E6%9C%AC%E5%88%B0%E8%BE%93%E5%87%BA%E5%86%B3%E7%AD%96"><span class="toc-number">2.</span> <span class="toc-text">二、Jev 的原理：从生成文本到输出决策</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%89%E3%80%81%E4%B8%BA%E4%BB%80%E4%B9%88%E9%80%89%E6%8B%A9-Laya-%E5%81%9A%E6%9C%AC%E5%9C%B0%E5%AE%9E%E8%B7%B5"><span class="toc-number">3.</span> <span class="toc-text">三、为什么选择 Laya 做本地实践</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%9B%9B%E3%80%81%E7%8E%B0%E6%9C%89-laya-api-%E5%AE%9E%E9%99%85%E5%81%9A%E4%BA%86%E4%BB%80%E4%B9%88"><span class="toc-number">4.</span> <span class="toc-text">四、现有 laya-api 实际做了什么</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%94%E3%80%81%E7%94%A8%E4%B8%80%E6%9D%A1%E8%AF%B7%E6%B1%82%E5%90%8C%E6%97%B6%E5%AE%8C%E6%88%90%E4%B8%89%E7%A7%8D%E5%88%A4%E6%96%AD"><span class="toc-number">5.</span> <span class="toc-text">五、用一条请求同时完成三种判断</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%AD%E3%80%81%E4%BB%8E%E6%A8%A1%E5%9E%8B%E6%9C%8D%E5%8A%A1%E5%88%B0%E5%86%B3%E7%AD%96%E5%BC%95%E6%93%8E"><span class="toc-number">6.</span> <span class="toc-text">六、从模型服务到决策引擎</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-%E5%85%88%E5%AE%9A%E4%B9%89%E6%84%8F%E5%9B%BE%E7%9A%84%E8%BE%B9%E7%95%8C"><span class="toc-number">6.1.</span> <span class="toc-text">1. 先定义意图的边界</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-%E6%A8%A1%E5%9E%8B%E7%BB%93%E6%9E%9C%E5%8F%AA%E6%98%AF%E7%AD%96%E7%95%A5%E7%9A%84%E8%BE%93%E5%85%A5"><span class="toc-number">6.2.</span> <span class="toc-text">2. 模型结果只是策略的输入</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-%E4%B8%8E-Dify-%E7%9A%84%E6%8E%A5%E5%85%A5%E6%96%B9%E5%BC%8F"><span class="toc-number">6.3.</span> <span class="toc-text">3. 与 Dify 的接入方式</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%83%E3%80%81%E9%AA%8C%E8%AF%81%E8%AE%B0%E5%BD%95%E8%83%BD%E8%AF%B4%E6%98%8E%E4%BB%80%E4%B9%88"><span class="toc-number">7.</span> <span class="toc-text">七、验证记录能说明什么</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%AB%E3%80%81%E5%BD%93%E5%89%8D%E5%AE%9E%E7%8E%B0%E7%9A%84%E5%87%A0%E4%B8%AA%E8%BE%B9%E7%95%8C"><span class="toc-number">8.</span> <span class="toc-text">八、当前实现的几个边界</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B9%9D%E3%80%81%E8%BF%99%E6%AC%A1%E5%AE%9E%E8%B7%B5%E7%9A%84%E6%94%B6%E8%8E%B7"><span class="toc-number">9.</span> <span class="toc-text">九、这次实践的收获</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99"><span class="toc-number">10.</span> <span class="toc-text">参考资料</span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub ↗</a><small>Built with Hexo · 视觉灵感 <a href="https://github.com/youlai-code/YOULAI_BLOG" target="_blank" rel="noopener noreferrer">YOULAI BLOG</a></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>
