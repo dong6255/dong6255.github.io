@@ -179,6 +179,13 @@ kbd { font: 10px/1.6 var(--mono); border: 1px solid #dae1e9; background: #fff9; 
 .stats span { font-size: 9px; color: #6a7a91; }
 .github-link { display: flex; justify-content: space-between; font-size: 11px; color: #5c7091; margin-top: 15px; }
 .github-link:hover { color: var(--accent-dark); }
+.social-links { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.social-links a { font-size: 11px; color: #64758d; white-space: nowrap; }
+.social-links a:hover { color: var(--accent-dark); }
+.profile-links { margin-top: 17px; gap: 7px; }
+.profile-links a { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid var(--line); border-radius: 7px; background: #ffffff60; font-size: 10px; }
+.profile-links a:hover { background: #edf1fc; border-color: #b7c7e1; }
+.footer-links { gap: 18px; }
 .activity-summary { font-size: 10px; color: #677b8e; margin: -4px 0 15px; }
 .activity-summary b { color: #3d7a62; font-weight: 600; }
 .activity-grid { display: grid; grid-template-rows: repeat(7,1fr); grid-auto-flow: column; grid-template-columns: repeat(14,minmax(0,1fr)); gap: 4px; }
