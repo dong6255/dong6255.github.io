@@ -1,4 +1,28 @@
 (() => {
+  const themeToggle = document.querySelector('#theme-toggle');
+  const applyTheme = theme => {
+    const dark = theme === 'dark';
+    document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    document.getElementById('theme-light-css').media = dark ? 'not all' : 'all';
+    document.getElementById('theme-dark-css').media = dark ? 'all' : 'not all';
+    themeToggle.checked = dark;
+    themeToggle.setAttribute('aria-checked', String(dark));
+    document.dispatchEvent(new Event('april-theme-change'));
+  };
+  applyTheme(document.documentElement.dataset.theme);
+  themeToggle.closest('.theme-switch').hidden = false;
+  themeToggle.addEventListener('change', () => {
+    const theme = themeToggle.checked ? 'dark' : 'light';
+    applyTheme(theme);
+    try { localStorage.setItem('april-theme', theme); } catch {}
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === 'april-theme' || event.key === null) applyTheme(event.newValue === 'dark' ? 'dark' : 'light');
+  });
+  window.addEventListener('pageshow', () => {
+    try { applyTheme(localStorage.getItem('april-theme') === 'dark' ? 'dark' : 'light'); } catch {}
+  });
   const tabs = [...document.querySelectorAll('[data-editor-tab]')];
   const selectTab = selected => {
     tabs.forEach(tab => {
@@ -19,8 +43,8 @@
       if (next) { event.preventDefault(); selectTab(next); next.focus(); }
     });
   });
-  const typewriter = document.querySelector('[data-typewriter]');
-  if (typewriter) {
+  document.querySelectorAll('[data-typewriter]').forEach(typewriter => {
+    const scene = typewriter.closest('.hero');
     const snippets = [
       ['Python', 'print("Hello, World!")'],
       ['JavaScript', 'console.log("Hello, World!");'],
@@ -29,9 +53,9 @@
       ['SQL', 'SELECT * FROM life;'],
       ['Python', 'import this']
     ];
-    const language = document.querySelector('[data-code-language]');
-    const toggle = document.querySelector('.typing-toggle');
-    const terminal = document.querySelector('.hero-terminal');
+    const language = scene.querySelector('[data-code-language]');
+    const toggle = scene.querySelector('.typing-toggle');
+    const terminal = scene.querySelector('.hero-terminal');
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     let index = 0, length = snippets[0][1].length, deleting = true, paused = false, timer;
     const paint = () => {
@@ -39,7 +63,7 @@
       typewriter.textContent = snippets[index][1].slice(0, length);
     };
     const tick = () => {
-      if (paused || reduced.matches || document.hidden) return;
+      if (paused || reduced.matches || document.hidden || getComputedStyle(scene).display === 'none') return;
       const line = snippets[index][1];
       length += deleting ? -1 : 1;
       paint();
@@ -56,7 +80,7 @@
       toggle.hidden = reduced.matches;
       if (reduced.matches) {
         length = snippets[index][1].length; deleting = true; paint();
-      } else if (!paused && !document.hidden) timer = setTimeout(tick, 2100);
+      } else if (!paused && !document.hidden && getComputedStyle(scene).display !== 'none') timer = setTimeout(tick, 2100);
     };
     toggle.addEventListener('click', () => {
       paused = !paused;
@@ -66,8 +90,9 @@
     });
     reduced.addEventListener('change', sync);
     document.addEventListener('visibilitychange', sync);
+    document.addEventListener('april-theme-change', sync);
     paint(); sync();
-  }
+  });
   const dialog = document.querySelector('#search-dialog');
   const input = document.querySelector('#search-input');
   const results = document.querySelector('#search-results');
