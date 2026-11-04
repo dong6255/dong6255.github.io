@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>用命令行操作微信：我的 agent-desktop 本地实践 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link id="theme-light-css" rel="stylesheet" href="/css/rebel.css?v=8f82bf48f9f6"><link id="theme-dark-css" rel="stylesheet" href="/css/rebel-dark.css?v=2df1a761c5e2" media="not all"><script>// Run before first paint. Only an explicit saved choice overrides the light default.
+(() => {
+  let theme = 'light';
+  try { if (localStorage.getItem('april-theme') === 'dark') theme = 'dark'; } catch {}
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  document.getElementById('theme-light-css').media = theme === 'light' ? 'all' : 'not all';
+  document.getElementById('theme-dark-css').media = theme === 'dark' ? 'all' : 'not all';
+})();
+</script><link rel="stylesheet" href="/css/theme-switch.css?v=bfe418a4d9e9"><script defer src="/js/rebel.js?v=7918a1b001dd"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop light-only" aria-hidden="true"><span></span><span></span><span></span></div><div class="backdrop dark-only" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header glass"><a class="brand light-only" href="/" aria-label="April 的博客首页"><span class="brand-mark" aria-hidden="true">a<span>✳</span></span>april<span class="brand-dot">.</span><span class="brand-caption">a digital garden</span></a><a class="brand dark-only" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class=""  href="/">首页</a><a class=""  href="/archives/">归档</a><a class="" href="/about/">关于</a><button class="search-open" type="button" aria-label="搜索笔记"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span>搜索笔记</span><kbd>Ctrl K</kbd></button><label class="theme-switch" title="切换亮色 / 暗色主题" hidden><input id="theme-toggle" type="checkbox" role="switch" aria-label="暗色主题"><span class="theme-switch-track" aria-hidden="true"><span class="theme-sun">☀</span><span class="theme-moon">☾</span><span class="theme-switch-thumb"></span></span></label></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2026-11-03T16:00:00.000Z">2026.11.04</time><span>April</span></div><h1>用命令行操作微信：我的 agent-desktop 本地实践</h1><a class="tag" href="/tags/%E6%99%BA%E8%83%BD%E4%BD%93/"># 智能体</a><a class="tag" href="/tags/agent-desktop/"># agent-desktop</a><a class="tag" href="/tags/%E6%A1%8C%E9%9D%A2%E8%87%AA%E5%8A%A8%E5%8C%96/"># 桌面自动化</a><a class="tag" href="/tags/Rust/"># Rust</a><a class="tag" href="/tags/%E5%BE%AE%E4%BF%A1/"># 微信</a></section><div class="reading-grid"><article class="prose"><blockquote>
+<p>摘要：我在 Windows 上拉取并编译了 Vercel Labs 的 agent-desktop，尝试用命令给微信好友发送一条“你好”。过程中遇到了控件不可见、点击返回成功但聊天没有切换，以及输入前焦点丢失等问题，最终通过读取界面、搜索联系人、剪贴板粘贴和快捷键完成发送。本文记录这次尝试，解释它通过系统可访问性接口操作桌面的原理，并讨论如何在外部接入 LLM，实现定时检查新消息和自动回复。</p>
+</blockquote>
+<span id="more"></span>
+
+<h2 id="一、从“把项目启动起来”开始"><a href="#一、从“把项目启动起来”开始" class="headerlink" title="一、从“把项目启动起来”开始"></a>一、从“把项目启动起来”开始</h2><p>最初看到 <a target="_blank" rel="noopener" href="https://github.com/vercel-labs/agent-desktop">agent-desktop</a> 时，我想先把项目拉到本地跑起来，再看看它能不能控制常用软件。我甚至提前准备了模型接口地址、API Key 和模型名称，打算在启动时填进去。</p>
+<p>看完项目说明才发现，它的使用形态与我最初预想的不同：agent-desktop 提供 Rust 编写的 CLI 和 C 库，由调用方组织操作步骤。原生命令行工具没有聊天界面，也不内置负责理解任务的 LLM。</p>
+<p>因此，这次运行不需要配置模型。编译完成后，每执行一条命令，就启动一个进程、完成一次操作、返回 JSON，然后退出。所谓“启动成功”，在这里表现为命令能运行、系统状态能读取，而不是浏览器打开一个本地页面。</p>
+<p>我随后选了一个能检查实际效果的任务：通过命令打开微信中的指定聊天，发送“你好”。操作过程中没有手动点击联系人或输入消息，界面读取和动作执行都由项目命令完成。</p>
+<p>文中的联系人统一替换为“测试好友”，省略真实备注和聊天记录；操作流程来自这次实际尝试。</p>
+<h2 id="二、项目如何理解和操作桌面"><a href="#二、项目如何理解和操作桌面" class="headerlink" title="二、项目如何理解和操作桌面"></a>二、项目如何理解和操作桌面</h2><h3 id="1-把窗口读取成可访问性树"><a href="#1-把窗口读取成可访问性树" class="headerlink" title="1. 把窗口读取成可访问性树"></a>1. 把窗口读取成可访问性树</h3><p>桌面应用可以通过操作系统的可访问性接口暴露窗口、按钮、文本框、列表等控件。agent-desktop 读取这些信息，将界面表示为树状结构。在 Windows 上，对接的是 UI Automation；项目也分别提供 macOS 和 Linux 的平台适配层。</p>
+<p>例如，微信中的界面可以抽象为：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">微信窗口</span><br><span class="line">├── 导航工具栏</span><br><span class="line">├── 搜索框</span><br><span class="line">├── 会话列表</span><br><span class="line">│   └── 测试好友</span><br><span class="line">└── 当前聊天</span><br><span class="line">    ├── 聊天标题</span><br><span class="line">    ├── 消息列表</span><br><span class="line">    ├── 消息输入框</span><br><span class="line">    └── 发送按钮</span><br></pre></td></tr></table></figure>
+
+<p>这个结构只用于解释原理，不是微信原始快照的完整输出。实际读取到的层级更深，还包含大量没有名称的容器，所以后面的命令会调整读取深度，并压缩输出。</p>
+<p>它能读取到什么，取决于应用暴露了什么。某个控件出现在树里，也不代表它当前可见、可点击或能通过语义接口完成操作，这一点在微信实践里很快就遇到了。</p>
+<h3 id="2-用快照中的引用操作控件"><a href="#2-用快照中的引用操作控件" class="headerlink" title="2. 用快照中的引用操作控件"></a>2. 用快照中的引用操作控件</h3><p>执行 <code>snapshot</code> 后，输出中的控件可能带有这样的引用：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">@s14gglc4k4lxsk:e145</span><br></pre></td></tr></table></figure>
+
+<p>前半部分对应快照，后半部分标识其中的元素。后续 <code>click</code>、<code>set-value</code>、<code>type</code> 等命令可以接收这种引用，定位需要操作的控件。</p>
+<p>引用依赖当前快照。界面变化后，应重新读取受影响区域或获取新快照，不能把某次运行生成的引用当成永久控件 ID。在 PowerShell 中还需要给它加引号，否则 <code>@</code> 可能被解释为 PowerShell 的语法。</p>
+<h3 id="3-默认语义操作，也支持真实输入"><a href="#3-默认语义操作，也支持真实输入" class="headerlink" title="3. 默认语义操作，也支持真实输入"></a>3. 默认语义操作，也支持真实输入</h3><p>默认情况下，工具优先通过可访问性接口调用控件动作，例如调用按钮的操作方法。这类操作可以不移动鼠标，也不抢占前台。</p>
+<p>需要切换窗口焦点、模拟键盘或移动鼠标时，可以显式添加 <code>--headed</code>。在本次 Windows 尝试中，最终发送消息依靠的就是前台窗口中的快捷键和粘贴操作。</p>
+<h3 id="4-完成一次操作，还要重新观察"><a href="#4-完成一次操作，还要重新观察" class="headerlink" title="4. 完成一次操作，还要重新观察"></a>4. 完成一次操作，还要重新观察</h3><p>工具返回的 JSON 包含 <code>ok</code>，动作结果中还会包含 <code>disposition</code>。例如，<code>delivered_unverified</code> 表示动作已交付，但效果没有经过验证；它不能直接证明聊天切换成功或消息发送成功。</p>
+<p>我实际采用的循环是：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">读取界面 → 确认目标 → 执行动作 → 重新读取界面 → 检查结果</span><br></pre></td></tr></table></figure>
+
+<p>项目负责提供观察和执行能力，调用方负责根据结果决定下一步。即使后来接入模型，这个循环也仍然需要保留。</p>
+<h2 id="三、在-Windows-上编译和验证"><a href="#三、在-Windows-上编译和验证" class="headerlink" title="三、在 Windows 上编译和验证"></a>三、在 Windows 上编译和验证</h2><p>本次使用的源码版本为 <code>1.1.0</code>，提交短哈希为 <code>93ae89e8</code>。编译环境包括 Windows、Rust 工具链和 MSVC Build Tools；仓库的 <code>rust-toolchain.toml</code> 固定了 Rust <code>1.89.0</code>。</p>
+<p>下面使用普通工作目录演示，读者可以替换为自己的路径：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">git clone https://github.com/vercel<span class="literal">-labs</span>/agent<span class="literal">-desktop</span>.git</span><br><span class="line"><span class="built_in">cd</span> agent<span class="literal">-desktop</span></span><br><span class="line">cargo build <span class="literal">--locked</span> <span class="literal">-p</span> agent<span class="literal">-desktop</span></span><br></pre></td></tr></table></figure>
+
+<p>这里显式指定 <code>-p agent-desktop</code>。项目是包含多个平台适配层的 Rust workspace，不宜直接在 Windows 上构建整个 workspace。</p>
+<p>构建完成后，可执行文件位于 <code>target\debug\agent-desktop.exe</code>。为了减少后续命令的重复，我用变量保存路径：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line"><span class="variable">$ad</span> = (<span class="built_in">Resolve-Path</span> <span class="string">&#x27;.\target\debug\agent-desktop.exe&#x27;</span>).Path</span><br><span class="line">&amp; <span class="variable">$ad</span> version</span><br><span class="line">&amp; <span class="variable">$ad</span> status</span><br></pre></td></tr></table></figure>
+
+<p>实际版本命令返回：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span><span class="attr">&quot;version&quot;</span><span class="punctuation">:</span><span class="string">&quot;2.6&quot;</span><span class="punctuation">,</span><span class="attr">&quot;ok&quot;</span><span class="punctuation">:</span><span class="literal"><span class="keyword">true</span></span><span class="punctuation">,</span><span class="attr">&quot;command&quot;</span><span class="punctuation">:</span><span class="string">&quot;version&quot;</span><span class="punctuation">,</span><span class="attr">&quot;data&quot;</span><span class="punctuation">:</span><span class="punctuation">&#123;</span><span class="attr">&quot;os&quot;</span><span class="punctuation">:</span><span class="string">&quot;windows&quot;</span><span class="punctuation">,</span><span class="attr">&quot;target&quot;</span><span class="punctuation">:</span><span class="string">&quot;x86_64&quot;</span><span class="punctuation">,</span><span class="attr">&quot;version&quot;</span><span class="punctuation">:</span><span class="string">&quot;1.1.0&quot;</span><span class="punctuation">&#125;</span><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>外层 <code>version: 2.6</code> 是 JSON 输出协议版本，<code>data.version: 1.1.0</code> 才是程序版本。状态检查也成功返回了 Windows 平台信息，其中 accessibility 为 <code>granted</code>，automation 和 screen_recording 为 <code>not_required</code>。这说明当前环境下这些基础检查通过，不代表工具能够跨越管理员权限边界操作任意应用。</p>
+<p>第一次使用前，我还读取了随二进制附带的操作说明：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">&amp; <span class="variable">$ad</span> skills get desktop</span><br><span class="line">&amp; <span class="variable">$ad</span> skills get platform</span><br></pre></td></tr></table></figure>
+
+<p>这两份说明与当前二进制一起提供，适合用来确认引用规则、平台差异和错误处理方式。</p>
+<h2 id="四、通过命令给微信好友发送消息"><a href="#四、通过命令给微信好友发送消息" class="headerlink" title="四、通过命令给微信好友发送消息"></a>四、通过命令给微信好友发送消息</h2><p>这次微信已经登录并运行，所以不需要执行启动或登录流程。下面按阶段展示实际使用的命令；发送阶段会真的发出消息，复现时应换成自己的测试联系人，并在执行回车前核对聊天标题和输入内容。</p>
+<h3 id="1-找到微信进程并读取界面"><a href="#1-找到微信进程并读取界面" class="headerlink" title="1. 找到微信进程并读取界面"></a>1. 找到微信进程并读取界面</h3><figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">&amp; <span class="variable">$ad</span> list<span class="literal">-apps</span></span><br></pre></td></tr></table></figure>
+
+<p>列表中找到了 <code>Weixin.exe</code>。进程名称来自这次实际运行结果，其他版本或安装环境应以自己的输出为准。</p>
+<p>接着读取微信界面：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">&amp; <span class="variable">$ad</span> snapshot <span class="literal">--app</span> Weixin.exe <span class="literal">--max-depth</span> <span class="number">30</span> <span class="literal">-i</span> <span class="literal">--compact</span></span><br></pre></td></tr></table></figure>
+
+<p>默认读取深度为 10，我第一次读取时，搜索框和聊天输入区域还藏在更深的容器里。改为 <code>--max-depth 30</code> 后，能够看到搜索框、会话列表、聊天标题、消息输入框和发送按钮。</p>
+<p><code>-i</code> 表示过滤为可交互元素，<code>--compact</code> 用来折叠部分没有名称的单子节点。这两个参数能减少输出，但不会消除应用本身的复杂层级。</p>
+<h3 id="2-尝试点击联系人，并检查是否真的切换"><a href="#2-尝试点击联系人，并检查是否真的切换" class="headerlink" title="2. 尝试点击联系人，并检查是否真的切换"></a>2. 尝试点击联系人，并检查是否真的切换</h3><p>我在会话列表里找到了目标联系人，先使用该次快照中的引用执行点击：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment"># 示例引用来自一次快照，复现时必须替换为自己刚获取的引用。</span></span><br><span class="line">&amp; <span class="variable">$ad</span> click <span class="string">&#x27;@s14gglc4k4lxsk:e145&#x27;</span></span><br></pre></td></tr></table></figure>
+
+<p>第一次点击返回 <code>ACTION_FAILED</code>，提示控件的实时 offscreen 状态为 true，动作没有交付。我随后恢复并将微信窗口置前：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">&amp; <span class="variable">$ad</span> restore <span class="literal">--app</span> Weixin.exe</span><br><span class="line">&amp; <span class="variable">$ad</span> <span class="literal">--headed</span> focus<span class="literal">-window</span> <span class="literal">--app</span> Weixin.exe</span><br></pre></td></tr></table></figure>
+
+<p>重新获取快照并点击后，命令返回了 <code>ok: true</code>，动作交付状态为 <code>delivered_unverified</code>。但再次读取界面时，聊天标题仍然是原来的会话，没有切到目标联系人。</p>
+<p>这是本次最值得记录的现象：调用控件方法成功，不等于应用完成了我想要的界面变化。因此，我没有继续向当前输入框写消息，而是改用搜索定位。</p>
+<h3 id="3-使用搜索、剪贴板和快捷键定位好友"><a href="#3-使用搜索、剪贴板和快捷键定位好友" class="headerlink" title="3. 使用搜索、剪贴板和快捷键定位好友"></a>3. 使用搜索、剪贴板和快捷键定位好友</h3><p>我还尝试了 <code>set-value</code> 直接写搜索框，以及 <code>--headed type</code> 输入联系人名称。前者返回控件不可见，后者返回输入交付前控件失去焦点；这两次都没有完成输入。</p>
+<p>最终可行的方式是把联系人名称写入剪贴板，通过 <code>Ctrl+F</code> 定位搜索，再粘贴：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">&amp; <span class="variable">$ad</span> clipboard<span class="literal">-set</span> <span class="string">&#x27;测试好友&#x27;</span></span><br><span class="line">&amp; <span class="variable">$ad</span> <span class="literal">--headed</span> press ctrl+f <span class="literal">--app</span> Weixin.exe</span><br><span class="line">&amp; <span class="variable">$ad</span> <span class="literal">--headed</span> press ctrl+v <span class="literal">--app</span> Weixin.exe</span><br></pre></td></tr></table></figure>
+
+<p>这些操作会将微信置于前台，并覆盖系统剪贴板中的文本。执行期间应避免同时在其他窗口输入。</p>
+<p>再次读取快照后，搜索框的值已经变为目标联系人名称，搜索结果中也出现了该联系人。确认结果后按回车：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">&amp; <span class="variable">$ad</span> <span class="literal">--headed</span> press <span class="keyword">return</span> <span class="literal">--app</span> Weixin.exe</span><br><span class="line">&amp; <span class="variable">$ad</span> snapshot <span class="literal">--app</span> Weixin.exe <span class="literal">--max-depth</span> <span class="number">30</span> <span class="literal">-i</span> <span class="literal">--compact</span></span><br></pre></td></tr></table></figure>
+
+<p>这一次，快照中的聊天标题和消息输入框名称都变成了目标联系人，输入框处于 focused 状态。到这里，我才确认后面的消息会写进正确的聊天。</p>
+<p>如果搜索结果有重名联系人，就需要进一步核对，不能直接用回车选中默认结果。这次进入聊天后，标题与指定的完整备注一致。</p>
+<h3 id="4-输入“你好”，核对后发送"><a href="#4-输入“你好”，核对后发送" class="headerlink" title="4. 输入“你好”，核对后发送"></a>4. 输入“你好”，核对后发送</h3><figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br></pre></td><td class="code"><pre><span class="line">&amp; <span class="variable">$ad</span> clipboard<span class="literal">-set</span> <span class="string">&#x27;你好&#x27;</span></span><br><span class="line">&amp; <span class="variable">$ad</span> <span class="literal">--headed</span> press ctrl+v <span class="literal">--app</span> Weixin.exe</span><br><span class="line">&amp; <span class="variable">$ad</span> snapshot <span class="literal">--app</span> Weixin.exe <span class="literal">--max-depth</span> <span class="number">30</span> <span class="literal">-i</span> <span class="literal">--compact</span></span><br></pre></td></tr></table></figure>
+
+<p>快照确认目标聊天输入框的值为“你好”，并且发送按钮已不再禁用。随后执行回车：</p>
+<figure class="highlight powershell"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">&amp; <span class="variable">$ad</span> <span class="literal">--headed</span> press <span class="keyword">return</span> <span class="literal">--app</span> Weixin.exe</span><br><span class="line">&amp; <span class="variable">$ad</span> snapshot <span class="literal">--app</span> Weixin.exe <span class="literal">--max-depth</span> <span class="number">30</span> <span class="literal">-i</span> <span class="literal">--compact</span></span><br></pre></td></tr></table></figure>
+
+<p>最后一次读取中，目标聊天输入框已清空，消息列表里出现了“你好”。这是我判断本次发送操作完成的依据；它不表示对方已经阅读消息。</p>
+<p>从查找微信进程，到核对发送结果，整个过程没有调用 LLM 接口。负责决定操作顺序的是外部调用方，agent-desktop 负责执行每一步并返回结果。</p>
+<h2 id="五、这次尝试暴露出的边界"><a href="#五、这次尝试暴露出的边界" class="headerlink" title="五、这次尝试暴露出的边界"></a>五、这次尝试暴露出的边界</h2><p>我原本以为，只要能从界面树拿到按钮和输入框，后面就是固定的一串命令。实际使用后发现，读取到控件、控件可操作、操作产生预期效果，是三个需要分别检查的条件。</p>
+<table>
+<thead>
+<tr>
+<th>实际遇到的情况</th>
+<th>本次处理方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>默认深度下看不到搜索框和消息输入框</td>
+<td>增大快照读取深度</td>
+</tr>
+<tr>
+<td>控件被判定为 offscreen</td>
+<td>恢复窗口、检查前台状态，并重新获取快照</td>
+</tr>
+<tr>
+<td>点击返回已交付，但聊天没有切换</td>
+<td>检查标题后改用搜索路径</td>
+</tr>
+<tr>
+<td>模拟输入前控件失去焦点</td>
+<td>改用剪贴板和应用快捷键</td>
+</tr>
+<tr>
+<td>动作只返回 <code>delivered_unverified</code></td>
+<td>重新读取实际界面确认效果</td>
+</tr>
+</tbody></table>
+<p>这些现象来自本次 Windows 微信环境，不能据此断言所有微信版本都一样，也不能把剪贴板方案当成对所有应用通用的解决办法。</p>
+<p>对于发送消息这种有外部效果的操作，我尤其不会把“返回值看起来成功”当成唯一依据。若一次发送的结果不确定，先读取消息列表，再决定如何处理；直接重试可能给对方连发两条。</p>
+<h2 id="六、后续可以怎样接入-LLM-自动回复"><a href="#六、后续可以怎样接入-LLM-自动回复" class="headerlink" title="六、后续可以怎样接入 LLM 自动回复"></a>六、后续可以怎样接入 LLM 自动回复</h2><p>手动组织命令验证了执行链路，下一步可以在外部写一个常驻程序，把新消息观察、模型生成和命令执行连接起来。下面是后续设计，尚未实现或验证。</p>
+<h3 id="1-定时观察，并维护消息处理状态"><a href="#1-定时观察，并维护消息处理状态" class="headerlink" title="1. 定时观察，并维护消息处理状态"></a>1. 定时观察，并维护消息处理状态</h3><p>可以用 Python 或 Node.js 编写后台调度程序，在用户已登录的交互式桌面会话中，定时调用 agent-desktop 获取界面快照，再由程序提取会话和可见消息。</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br></pre></td><td class="code"><pre><span class="line">定时触发</span><br><span class="line">   ↓</span><br><span class="line">读取微信界面，发现候选新消息</span><br><span class="line">   ↓</span><br><span class="line">核对会话、发送方和处理记录</span><br><span class="line">   ↓</span><br><span class="line">调用 LLM 生成回复</span><br><span class="line">   ↓</span><br><span class="line">校验回复，重新确认聊天目标</span><br><span class="line">   ↓</span><br><span class="line">输入、发送、重新读取结果</span><br><span class="line">   ↓</span><br><span class="line">更新本地处理状态</span><br></pre></td></tr></table></figure>
+
+<p>调度器负责周期触发；操作过程中若要等待界面条件，应使用工具提供的等待能力或有截止时间的条件检查，而不是每一步都固定睡眠几秒。</p>
+<p>难点在于，桌面快照并不是微信消息订阅接口。当前界面可能只显示一部分会话或消息，未读标记也可能随着打开聊天而变化。因此，真正开始自动回复前，还需要单独验证新消息发现率、会话切换和消息方向识别，不能假设一份快照就包含全部新消息。</p>
+<h3 id="2-把模型接在外部控制程序中"><a href="#2-把模型接在外部控制程序中" class="headerlink" title="2. 把模型接在外部控制程序中"></a>2. 把模型接在外部控制程序中</h3><p>agent-desktop 继续负责桌面执行，外部程序通过模型服务 API 生成回复。模型地址、名称和密钥由后台程序读取环境变量或私有配置，不写进博客、前端构建变量或仓库。</p>
+<p>本次使用的 <code>VITE_*</code> 配置没有进入原生命令行工具。后续若编写服务端控制程序，可以自行约定 <code>LLM_BASE_URL</code>、<code>LLM_API_KEY</code> 和 <code>LLM_MODEL</code>，由这一层读取并使用；这些也不是 agent-desktop 自带的配置项。</p>
+<p>我会先让模型只生成待发送文本，由程序固定执行经过验证的流程。好友发来的消息应作为待处理内容，不能获得修改目标联系人、读取其他聊天或任意执行命令的权限。</p>
+<h3 id="3-先解决重复回复和会话串线"><a href="#3-先解决重复回复和会话串线" class="headerlink" title="3. 先解决重复回复和会话串线"></a>3. 先解决重复回复和会话串线</h3><p>自动回复程序至少要记录会话标识、已处理的入站消息、回复内容和发送状态。若没有可用的稳定消息 ID，可能需要组合会话、发送方、时间、内容及相邻消息做去重，并接受这种方式仍会存在误差。</p>
+<p>尤其不能只用“消息文本是否出现过”去重：同一个人可能连续发两次“你好”，也不能把刚刚由程序发出的内容识别成新的入站消息。</p>
+<p>同一时刻只让一个执行任务控制微信，避免两个轮询任务交错切换联系人。模型生成完成后，还要重新核对聊天标题和最新消息，因为生成期间界面或对话可能已经变化。</p>
+<h3 id="4-从有限范围开始验证"><a href="#4-从有限范围开始验证" class="headerlink" title="4. 从有限范围开始验证"></a>4. 从有限范围开始验证</h3><p>我更愿意先选择少量测试联系人，只生成回复草稿，确认新消息识别、去重和会话定位都能工作，再逐步开放自动发送。</p>
+<p>后续还可以加入允许回复的联系人名单、工作时段、回复频率限制、连续自动回复次数上限，以及出错后暂停的机制。对发送结果不确定的任务单独记录并核查，避免模型或调度器盲目重试。</p>
+<p>目前，我验证到的是“读取界面、定位指定好友、发送一条消息并检查结果”这一段。要把它扩展为长期运行的自动回复程序，接入模型之外，更需要验证消息发现和发送状态管理。</p>
+<h2 id="参考资料"><a href="#参考资料" class="headerlink" title="参考资料"></a>参考资料</h2><ul>
+<li><a target="_blank" rel="noopener" href="https://github.com/vercel-labs/agent-desktop">agent-desktop 项目仓库</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/vercel-labs/agent-desktop/blob/93ae89e8/README.md">本次提交的项目说明</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/vercel-labs/agent-desktop/blob/93ae89e8/docs/install.md">安装与源码编译说明</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/vercel-labs/agent-desktop/blob/93ae89e8/docs/json-output.md">JSON 输出约定</a></li>
+<li><a target="_blank" rel="noopener" href="https://github.com/vercel-labs/agent-desktop/blob/93ae89e8/skills/agent-desktop-windows/SKILL.md">Windows 平台操作说明</a></li>
+</ul>
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/laya-local-decision-engine/">下一篇：从 Jev 到 Laya：搭建面向智能体的本地决策引擎</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%80%E3%80%81%E4%BB%8E%E2%80%9C%E6%8A%8A%E9%A1%B9%E7%9B%AE%E5%90%AF%E5%8A%A8%E8%B5%B7%E6%9D%A5%E2%80%9D%E5%BC%80%E5%A7%8B"><span class="toc-number">1.</span> <span class="toc-text">一、从“把项目启动起来”开始</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%8C%E3%80%81%E9%A1%B9%E7%9B%AE%E5%A6%82%E4%BD%95%E7%90%86%E8%A7%A3%E5%92%8C%E6%93%8D%E4%BD%9C%E6%A1%8C%E9%9D%A2"><span class="toc-number">2.</span> <span class="toc-text">二、项目如何理解和操作桌面</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-%E6%8A%8A%E7%AA%97%E5%8F%A3%E8%AF%BB%E5%8F%96%E6%88%90%E5%8F%AF%E8%AE%BF%E9%97%AE%E6%80%A7%E6%A0%91"><span class="toc-number">2.1.</span> <span class="toc-text">1. 把窗口读取成可访问性树</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-%E7%94%A8%E5%BF%AB%E7%85%A7%E4%B8%AD%E7%9A%84%E5%BC%95%E7%94%A8%E6%93%8D%E4%BD%9C%E6%8E%A7%E4%BB%B6"><span class="toc-number">2.2.</span> <span class="toc-text">2. 用快照中的引用操作控件</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-%E9%BB%98%E8%AE%A4%E8%AF%AD%E4%B9%89%E6%93%8D%E4%BD%9C%EF%BC%8C%E4%B9%9F%E6%94%AF%E6%8C%81%E7%9C%9F%E5%AE%9E%E8%BE%93%E5%85%A5"><span class="toc-number">2.3.</span> <span class="toc-text">3. 默认语义操作，也支持真实输入</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#4-%E5%AE%8C%E6%88%90%E4%B8%80%E6%AC%A1%E6%93%8D%E4%BD%9C%EF%BC%8C%E8%BF%98%E8%A6%81%E9%87%8D%E6%96%B0%E8%A7%82%E5%AF%9F"><span class="toc-number">2.4.</span> <span class="toc-text">4. 完成一次操作，还要重新观察</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%89%E3%80%81%E5%9C%A8-Windows-%E4%B8%8A%E7%BC%96%E8%AF%91%E5%92%8C%E9%AA%8C%E8%AF%81"><span class="toc-number">3.</span> <span class="toc-text">三、在 Windows 上编译和验证</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%9B%9B%E3%80%81%E9%80%9A%E8%BF%87%E5%91%BD%E4%BB%A4%E7%BB%99%E5%BE%AE%E4%BF%A1%E5%A5%BD%E5%8F%8B%E5%8F%91%E9%80%81%E6%B6%88%E6%81%AF"><span class="toc-number">4.</span> <span class="toc-text">四、通过命令给微信好友发送消息</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-%E6%89%BE%E5%88%B0%E5%BE%AE%E4%BF%A1%E8%BF%9B%E7%A8%8B%E5%B9%B6%E8%AF%BB%E5%8F%96%E7%95%8C%E9%9D%A2"><span class="toc-number">4.1.</span> <span class="toc-text">1. 找到微信进程并读取界面</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-%E5%B0%9D%E8%AF%95%E7%82%B9%E5%87%BB%E8%81%94%E7%B3%BB%E4%BA%BA%EF%BC%8C%E5%B9%B6%E6%A3%80%E6%9F%A5%E6%98%AF%E5%90%A6%E7%9C%9F%E7%9A%84%E5%88%87%E6%8D%A2"><span class="toc-number">4.2.</span> <span class="toc-text">2. 尝试点击联系人，并检查是否真的切换</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-%E4%BD%BF%E7%94%A8%E6%90%9C%E7%B4%A2%E3%80%81%E5%89%AA%E8%B4%B4%E6%9D%BF%E5%92%8C%E5%BF%AB%E6%8D%B7%E9%94%AE%E5%AE%9A%E4%BD%8D%E5%A5%BD%E5%8F%8B"><span class="toc-number">4.3.</span> <span class="toc-text">3. 使用搜索、剪贴板和快捷键定位好友</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#4-%E8%BE%93%E5%85%A5%E2%80%9C%E4%BD%A0%E5%A5%BD%E2%80%9D%EF%BC%8C%E6%A0%B8%E5%AF%B9%E5%90%8E%E5%8F%91%E9%80%81"><span class="toc-number">4.4.</span> <span class="toc-text">4. 输入“你好”，核对后发送</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%94%E3%80%81%E8%BF%99%E6%AC%A1%E5%B0%9D%E8%AF%95%E6%9A%B4%E9%9C%B2%E5%87%BA%E7%9A%84%E8%BE%B9%E7%95%8C"><span class="toc-number">5.</span> <span class="toc-text">五、这次尝试暴露出的边界</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%AD%E3%80%81%E5%90%8E%E7%BB%AD%E5%8F%AF%E4%BB%A5%E6%80%8E%E6%A0%B7%E6%8E%A5%E5%85%A5-LLM-%E8%87%AA%E5%8A%A8%E5%9B%9E%E5%A4%8D"><span class="toc-number">6.</span> <span class="toc-text">六、后续可以怎样接入 LLM 自动回复</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-%E5%AE%9A%E6%97%B6%E8%A7%82%E5%AF%9F%EF%BC%8C%E5%B9%B6%E7%BB%B4%E6%8A%A4%E6%B6%88%E6%81%AF%E5%A4%84%E7%90%86%E7%8A%B6%E6%80%81"><span class="toc-number">6.1.</span> <span class="toc-text">1. 定时观察，并维护消息处理状态</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-%E6%8A%8A%E6%A8%A1%E5%9E%8B%E6%8E%A5%E5%9C%A8%E5%A4%96%E9%83%A8%E6%8E%A7%E5%88%B6%E7%A8%8B%E5%BA%8F%E4%B8%AD"><span class="toc-number">6.2.</span> <span class="toc-text">2. 把模型接在外部控制程序中</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-%E5%85%88%E8%A7%A3%E5%86%B3%E9%87%8D%E5%A4%8D%E5%9B%9E%E5%A4%8D%E5%92%8C%E4%BC%9A%E8%AF%9D%E4%B8%B2%E7%BA%BF"><span class="toc-number">6.3.</span> <span class="toc-text">3. 先解决重复回复和会话串线</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#4-%E4%BB%8E%E6%9C%89%E9%99%90%E8%8C%83%E5%9B%B4%E5%BC%80%E5%A7%8B%E9%AA%8C%E8%AF%81"><span class="toc-number">6.4.</span> <span class="toc-text">4. 从有限范围开始验证</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99"><span class="toc-number">7.</span> <span class="toc-text">参考资料</span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand light-only" href="/">april<span class="brand-dot">.</span></a><a class="brand dark-only" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><nav class="social-links footer-links" aria-label="April 的其他平台"><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span><span class="sr-only">（在新标签页打开）</span></a><a href="https://www.cnblogs.com/april-code" target="_blank" rel="noopener noreferrer">博客园 <span aria-hidden="true">↗</span><span class="sr-only">（在新标签页打开）</span></a><a href="https://blog.csdn.net/chunhev5" target="_blank" rel="noopener noreferrer">CSDN <span aria-hidden="true">↗</span><span class="sr-only">（在新标签页打开）</span></a></nav>
+<small><span class="status-dot" aria-hidden="true"></span> 用 Hexo 构建，用好奇心驱动。<code>made for the open web.</code></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>
