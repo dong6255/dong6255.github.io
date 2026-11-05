@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Qwen3-TTS 本地 GPU 实践：从实时播放卡顿到 CUDA Graph 加速 | April&#39;s Blog</title><meta name="description" content="记录个人学习、工作、生活等技术内容"><link id="theme-light-css" rel="stylesheet" href="/css/rebel.css?v=8f82bf48f9f6"><link id="theme-dark-css" rel="stylesheet" href="/css/rebel-dark.css?v=2df1a761c5e2" media="not all"><script>// Run before first paint. Only an explicit saved choice overrides the light default.
+(() => {
+  let theme = 'light';
+  try { if (localStorage.getItem('april-theme') === 'dark') theme = 'dark'; } catch {}
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+  document.getElementById('theme-light-css').media = theme === 'light' ? 'all' : 'not all';
+  document.getElementById('theme-dark-css').media = theme === 'dark' ? 'all' : 'not all';
+})();
+</script><link rel="stylesheet" href="/css/theme-switch.css?v=bfe418a4d9e9"><script defer src="/js/rebel.js?v=7918a1b001dd"></script><meta name="generator" content="Hexo 8.1.2"></head>
+<body><a class="skip" href="#main">跳转到内容</a><div class="backdrop light-only" aria-hidden="true"><span></span><span></span><span></span></div><div class="backdrop dark-only" aria-hidden="true"><span>★</span><span>✦</span></div>
+<header class="header glass"><a class="brand light-only" href="/" aria-label="April 的博客首页"><span class="brand-mark" aria-hidden="true">a<span>✳</span></span>april<span class="brand-dot">.</span><span class="brand-caption">a digital garden</span></a><a class="brand dark-only" href="/" aria-label="April 的博客首页">APRIL<span>NOTE!</span></a><nav aria-label="主导航"><a class=""  href="/">首页</a><a class=""  href="/archives/">归档</a><a class="" href="/about/">关于</a><button class="search-open" type="button" aria-label="搜索笔记"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span>搜索笔记</span><kbd>Ctrl K</kbd></button><label class="theme-switch" title="切换亮色 / 暗色主题" hidden><input id="theme-toggle" type="checkbox" role="switch" aria-label="暗色主题"><span class="theme-switch-track" aria-hidden="true"><span class="theme-sun">☀</span><span class="theme-moon">☾</span><span class="theme-switch-thumb"></span></span></label></nav></header>
+<main id="main"><section class="reading-head"><a href="/archives/">↖ 全部笔记</a><div class="meta"><time datetime="2026-11-04T16:00:00.000Z">2026.11.05</time><span>April</span></div><h1>Qwen3-TTS 本地 GPU 实践：从实时播放卡顿到 CUDA Graph 加速</h1><a class="tag" href="/tags/Qwen3-TTS/"># Qwen3-TTS</a><a class="tag" href="/tags/%E8%AF%AD%E9%9F%B3%E5%90%88%E6%88%90/"># 语音合成</a><a class="tag" href="/tags/CUDA-Graph/"># CUDA Graph</a><a class="tag" href="/tags/PyTorch/"># PyTorch</a><a class="tag" href="/tags/Web-Audio/"># Web Audio</a><a class="tag" href="/tags/%E6%80%A7%E8%83%BD%E4%BC%98%E5%8C%96/"># 性能优化</a></section><div class="reading-grid"><article class="prose"><p>把 Qwen3-TTS 放到本机 GPU 上运行之后，我遇到的第一个问题是：模型明明已经在使用显卡，生成一段几秒钟的语音，仍然要等待好几秒。</p>
+<p>随后把接口改成分块返回，第一段声音确实更早出来了，但播放过程中仍可能出现停顿。原因很直接：如果生成一秒音频需要超过一秒，前端再早开始播放，也迟早会把缓存消耗完。</p>
+<p>这次实践最终采用了两条配合使用的改进路线：<strong>后端用 CUDA Graph 加速固定长度的音频编码预测，前后端用 PCM 分块传输和 Web Audio 时间轴连续播放。</strong></p>
+<p>在这台 RTX 5070 Ti 上，最终一次 1.7B 模型的浏览器测试记录为：首段音频约 0.60 秒返回，2.78 秒生成 4.80 秒音频，实时率约 0.58。这里的首段时间是服务端记录的首块就绪时间，不能直接当作扬声器实际出声延迟。</p>
+<p>下面记录排查过程、关键代码、测试结果，以及这套方案仍然存在的边界。</p>
+<span id="more"></span>
+
+<h2 id="一、选择模型与本地运行环境"><a href="#一、选择模型与本地运行环境" class="headerlink" title="一、选择模型与本地运行环境"></a>一、选择模型与本地运行环境</h2><p><a target="_blank" rel="noopener" href="https://github.com/QwenLM/Qwen3-TTS">Qwen3-TTS</a> 提供预设音色合成、声音设计和声音克隆等能力。这次主要使用 CustomVoice：选择已有音色，输入文字生成语音。</p>
+<table>
+<thead>
+<tr>
+<th>模型</th>
+<th>这次实践中的用途</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1.7B CustomVoice</td>
+<td>默认模型，保留语气指令控制</td>
+</tr>
+<tr>
+<td>0.6B CustomVoice</td>
+<td>轻量模型，用于速度与资源占用对比，不支持语气指令</td>
+</tr>
+<tr>
+<td>VoiceDesign &#x2F; Base</td>
+<td>分别面向声音设计与声音克隆，不属于本文的优化对象</td>
+</tr>
+</tbody></table>
+<p>模型能力和接口用法以<a target="_blank" rel="noopener" href="https://github.com/QwenLM/Qwen3-TTS#python-package-usage">官方说明</a>为准，不应把一个模型的功能套到另一个模型上。</p>
+<p>本次 Windows 测试环境如下。</p>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>配置</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPU</td>
+<td>NVIDIA GeForce RTX 5070 Ti，16 GB 显存</td>
+</tr>
+<tr>
+<td>系统内存</td>
+<td>32 GB</td>
+</tr>
+<tr>
+<td>Python</td>
+<td>3.12</td>
+</tr>
+<tr>
+<td>PyTorch</td>
+<td>2.10.0+cu128</td>
+</tr>
+<tr>
+<td>Transformers</td>
+<td>4.57.3</td>
+</tr>
+<tr>
+<td>推理精度</td>
+<td>BF16</td>
+</tr>
+<tr>
+<td>注意力实现</td>
+<td>显式使用 SDPA</td>
+</tr>
+<tr>
+<td>请求并发</td>
+<td>单个生成任务</td>
+</tr>
+</tbody></table>
+<p>模型从本地目录加载，推理过程中不调用云端语音接口。为了避免把环境问题和推理问题混在一起，安装时使用了独立虚拟环境，并先确认 CUDA 运算能够正常执行。</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">import</span> torch</span><br><span class="line"></span><br><span class="line"><span class="keyword">assert</span> torch.cuda.is_available()</span><br><span class="line"><span class="built_in">print</span>(torch.__version__, torch.version.cuda)</span><br><span class="line"><span class="built_in">print</span>(torch.cuda.get_device_name(<span class="number">0</span>))</span><br><span class="line"><span class="built_in">print</span>((torch.ones(<span class="number">4</span>, device=<span class="string">&quot;cuda:0&quot;</span>) * <span class="number">2</span>).tolist())</span><br></pre></td></tr></table></figure>
+
+<p>加载模型的关键配置是：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">from</span> qwen_tts <span class="keyword">import</span> Qwen3TTSModel</span><br><span class="line"></span><br><span class="line">tts = Qwen3TTSModel.from_pretrained(</span><br><span class="line">    <span class="string">&quot;./models/Qwen3-TTS-12Hz-1.7B-CustomVoice&quot;</span>,</span><br><span class="line">    device_map=<span class="string">&quot;cuda:0&quot;</span>,</span><br><span class="line">    dtype=torch.bfloat16,</span><br><span class="line">    attn_implementation=<span class="string">&quot;sdpa&quot;</span>,</span><br><span class="line">    local_files_only=<span class="literal">True</span>,</span><br><span class="line">)</span><br><span class="line"></span><br><span class="line"><span class="built_in">print</span>(<span class="built_in">next</span>(tts.model.talker.parameters()).device)</span><br><span class="line"><span class="built_in">print</span>(<span class="built_in">next</span>(tts.model.speech_tokenizer.model.parameters()).device)</span><br></pre></td></tr></table></figure>
+
+<p>这里要同时检查语音生成模型和音频解码器的位置。进程名字里出现 <code>python.exe</code> 或某个 Python 发行版的路径，无法说明它是在 CPU 还是 GPU 上推理。</p>
+<h2 id="二、为什么用了-GPU，播放仍然会卡顿"><a href="#二、为什么用了-GPU，播放仍然会卡顿" class="headerlink" title="二、为什么用了 GPU，播放仍然会卡顿"></a>二、为什么用了 GPU，播放仍然会卡顿</h2><p>我把问题拆成了三种情况。</p>
+<h3 id="1-等整段生成完，才开始播放"><a href="#1-等整段生成完，才开始播放" class="headerlink" title="1. 等整段生成完，才开始播放"></a>1. 等整段生成完，才开始播放</h3><p>最初的网页使用普通的生成接口：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">输入文字 → 生成全部音频编码 → 解码完整波形 → 返回文件 → 播放</span><br></pre></td></tr></table></figure>
+
+<p>即使 GPU 推理正常，用户也要等完整流程结束才能听到声音。</p>
+<p>还有一个容易误解的参数：<code>non_streaming_mode=False</code>。</p>
+<p>在本次使用的<a target="_blank" rel="noopener" href="https://github.com/QwenLM/Qwen3-TTS/blob/022e286b98fbec7e1e916cb940cdf532cd9f488e/qwen_tts/inference/qwen3_tts_model.py">官方 Python 封装实现</a>中，这个参数用于模拟流式文本输入，并不会直接把 <code>generate_custom_voice()</code> 变成逐块返回音频的生成器。该方法仍然先等待模型生成，再调用解码器，最后返回完整波形。</p>
+<p>因此，不能仅修改这个参数，就认为前端已经拿到了真正的音频流。</p>
+<h3 id="2-提前开始播放，但后续音频供给不足"><a href="#2-提前开始播放，但后续音频供给不足" class="headerlink" title="2. 提前开始播放，但后续音频供给不足"></a>2. 提前开始播放，但后续音频供给不足</h3><p>用实时率 RTF 衡量这个问题更直观：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">RTF = 生成耗时 / 生成音频时长</span><br></pre></td></tr></table></figure>
+
+<p>例如，生成 3.6 秒音频需要 4.7 秒，RTF 约为 1.31。用户可能先听到第一段，但播放器消耗音频的速度高于服务端产生音频的速度，缓存就会逐渐见底。</p>
+<p>缓冲只能吸收一定程度的抖动。如果长时间平均 RTF 大于 1，增加缓冲意味着更晚开始播放，并不能让服务端真正追上播放速度。</p>
+<h3 id="3-后端足够快，前端却没有连续调度"><a href="#3-后端足够快，前端却没有连续调度" class="headerlink" title="3. 后端足够快，前端却没有连续调度"></a>3. 后端足够快，前端却没有连续调度</h3><p>另一类卡顿来自播放实现：收到一段就创建一个播放器并立即 <code>play()</code>，或者为每一段单独增加固定等待时间，容易在音频块之间产生空隙。</p>
+<p>这种情况下应该检查音频时间轴、排队时长和数据到达间隔，而不是继续缩小模型。</p>
+<h2 id="三、先测量，再决定优化哪里"><a href="#三、先测量，再决定优化哪里" class="headerlink" title="三、先测量，再决定优化哪里"></a>三、先测量，再决定优化哪里</h2><p>最初两次网页接口复测分别用了约 7.73 秒和 6.70 秒，对应音频时长为 4.40 秒和 3.92 秒。这说明等待确实存在，但还不能直接定位是模型计算、接口、解码还是页面处理造成的。</p>
+<p>后续在推理引擎内部分别记录生成、解码和整体耗时，并对完整生成与流式生成分开测试。</p>
+<p>CUDA 操作具有异步执行特性。测量 GPU 阶段时，需要在合适的位置同步，否则容易只测到提交计算的时间，而不是计算完成的时间：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">import</span> time</span><br><span class="line"></span><br><span class="line">torch.cuda.synchronize()</span><br><span class="line">started = time.perf_counter()</span><br><span class="line">result = generate_codes()</span><br><span class="line">torch.cuda.synchronize()</span><br><span class="line">generation_seconds = time.perf_counter() - started</span><br></pre></td></tr></table></figure>
+
+<p>这种同步也有开销，适合用于定位和基准测试，不能不加区分地散落在每个小算子之间。</p>
+<p>本次观测到，原始内部基准中，生成阶段约 4.75 秒，而完整音频解码只有约 0.04 秒。因此，主要优化对象应当是编码生成路径。</p>
+<p>还要注意计时口径：在流式实现里，解码发生在生成过程的回调中，<code>generation_seconds</code> 会包含分块解码花费的时间。不能把它与累计 <code>decode_seconds</code> 再相加，作为整体耗时。</p>
+<h2 id="四、先减少固定编码预测的循环开销"><a href="#四、先减少固定编码预测的循环开销" class="headerlink" title="四、先减少固定编码预测的循环开销"></a>四、先减少固定编码预测的循环开销</h2><p>在本次版本的<a target="_blank" rel="noopener" href="https://github.com/QwenLM/Qwen3-TTS/blob/022e286b98fbec7e1e916cb940cdf532cd9f488e/qwen_tts/core/models/modeling_qwen3_tts.py">模型实现</a>中，每个音频帧有 16 组编码：主生成器负责第一组，内部的 Code Predictor 再生成剩下 15 组。</p>
+<p>该内部预测器在当前模型配置中没有 EOS，生成步数是固定的。这让它成为一个比较适合单独优化的部分。</p>
+<p>我保留主语音模型原有的生成与结束逻辑，仅把内部的固定步数预测替换为更直接的循环，减少通用生成框架的逐步调度开销。</p>
+<p>下面是核心实现，来源于附件中的 <code>fast_engine.py</code>：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">import</span> types</span><br><span class="line"><span class="keyword">import</span> torch</span><br><span class="line"></span><br><span class="line"><span class="keyword">def</span> <span class="title function_">fixed_codebook_generate</span>(<span class="params"></span></span><br><span class="line"><span class="params">    predictor, *, inputs_embeds, max_new_tokens,</span></span><br><span class="line"><span class="params">    do_sample=<span class="literal">True</span>, top_k=<span class="number">50</span>, top_p=<span class="number">1.0</span>,</span></span><br><span class="line"><span class="params">    temperature=<span class="number">0.9</span>, **kwargs,</span></span><br><span class="line"><span class="params"></span>):</span><br><span class="line">    tokens, cache, previous = [], <span class="literal">None</span>, <span class="literal">None</span></span><br><span class="line"></span><br><span class="line">    <span class="keyword">for</span> step <span class="keyword">in</span> <span class="built_in">range</span>(max_new_tokens):</span><br><span class="line">        output = predictor(</span><br><span class="line">            inputs_embeds=inputs_embeds <span class="keyword">if</span> step == <span class="number">0</span> <span class="keyword">else</span> <span class="literal">None</span>,</span><br><span class="line">            input_ids=previous,</span><br><span class="line">            past_key_values=cache,</span><br><span class="line">            generation_steps=step,</span><br><span class="line">            use_cache=<span class="literal">True</span>,</span><br><span class="line">            output_hidden_states=<span class="literal">False</span>,</span><br><span class="line">            return_dict=<span class="literal">True</span>,</span><br><span class="line">        )</span><br><span class="line">        cache = output.past_key_values</span><br><span class="line">        logits = output.logits[:, -<span class="number">1</span>, :].<span class="built_in">float</span>()</span><br><span class="line"></span><br><span class="line">        <span class="keyword">if</span> do_sample:</span><br><span class="line">            logits = logits / temperature</span><br><span class="line">            <span class="keyword">if</span> top_k:</span><br><span class="line">                cutoff = torch.topk(</span><br><span class="line">                    logits, <span class="built_in">min</span>(top_k, logits.shape[-<span class="number">1</span>]), dim=-<span class="number">1</span></span><br><span class="line">                ).values[:, -<span class="number">1</span>:]</span><br><span class="line">                logits = logits.masked_fill(</span><br><span class="line">                    logits &lt; cutoff, -<span class="built_in">float</span>(<span class="string">&quot;inf&quot;</span>)</span><br><span class="line">                )</span><br><span class="line">            <span class="keyword">if</span> top_p &lt; <span class="number">1</span>:</span><br><span class="line">                values, indices = torch.sort(logits, descending=<span class="literal">False</span>)</span><br><span class="line">                remove = values.softmax(-<span class="number">1</span>).cumsum(-<span class="number">1</span>) &lt;= <span class="number">1</span> - top_p</span><br><span class="line">                remove[:, -<span class="number">1</span>] = <span class="literal">False</span></span><br><span class="line">                mask = torch.zeros_like(remove).scatter(<span class="number">1</span>, indices, remove)</span><br><span class="line">                logits = logits.masked_fill(mask, -<span class="built_in">float</span>(<span class="string">&quot;inf&quot;</span>))</span><br><span class="line">            previous = torch.multinomial(logits.softmax(-<span class="number">1</span>), <span class="number">1</span>)</span><br><span class="line">        <span class="keyword">else</span>:</span><br><span class="line">            previous = logits.argmax(-<span class="number">1</span>, keepdim=<span class="literal">True</span>)</span><br><span class="line"></span><br><span class="line">        tokens.append(previous)</span><br><span class="line"></span><br><span class="line">    <span class="keyword">return</span> types.SimpleNamespace(</span><br><span class="line">        sequences=torch.cat(tokens, dim=-<span class="number">1</span>)</span><br><span class="line">    )</span><br></pre></td></tr></table></figure>
+
+<p>这里仍然保留温度、Top-k、Top-p 与采样开关，没有通过改成贪心生成来获得表面上的提速。</p>
+<p>它也不是任意模型 <code>generate()</code> 的通用替代品。适用前提是当前 Code Predictor 的固定长度、无 EOS，以及已经检查过的输入和输出约定。主生成器仍然需要正常判断语音结束。</p>
+<p>线程数也做了对比：这台机器上，四线程稍快于默认线程数；进一步降到一个线程并没有继续提升。固定循环优化后，完整生成从约 4.79 秒降到 4.46 秒，有改善，但不足以解决持续播放时的速度缺口。</p>
+<h2 id="五、真正明显的提升来自-CUDA-Graph"><a href="#五、真正明显的提升来自-CUDA-Graph" class="headerlink" title="五、真正明显的提升来自 CUDA Graph"></a>五、真正明显的提升来自 CUDA Graph</h2><p>固定步数只是给下一步创造了条件。</p>
+<p>Code Predictor 的常用输入形状固定，步数固定，默认采样参数也固定。如果仍然让 Python 为每个音频帧重复调度同样的 15 步计算，会保留大量重复的主机端开销。</p>
+<p>我尝试把这段计算捕获为 CUDA Graph：每次只把新的输入复制到固定缓冲区，再重放已捕获的 GPU 操作。</p>
+<p><a target="_blank" rel="noopener" href="https://docs.pytorch.org/docs/2.10/notes/cuda.html#cuda-graphs">PyTorch 文档</a>说明了 CUDA Graph 对静态形状、稳定内存地址等条件的要求。因此，这里只捕获符合条件的内部预测器，没有把具有动态文本长度和结束条件的整个 TTS 流程强行放进图里。</p>
+<p>核心代码如下。示例聚焦单卡、单样本、BF16 的这次配置：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">class</span> <span class="title class_">GraphPredictor</span>:</span><br><span class="line">    <span class="keyword">def</span> <span class="title function_">__init__</span>(<span class="params">self, predictor, width, *, sample=<span class="literal">True</span></span>):</span><br><span class="line">        <span class="variable language_">self</span>.predictor = predictor</span><br><span class="line">        <span class="variable language_">self</span>.sample = sample</span><br><span class="line">        <span class="variable language_">self</span>.static_input = torch.zeros(</span><br><span class="line">            <span class="number">1</span>, <span class="number">2</span>, width,</span><br><span class="line">            device=<span class="built_in">next</span>(predictor.parameters()).device,</span><br><span class="line">            dtype=torch.bfloat16,</span><br><span class="line">        )</span><br><span class="line">        <span class="variable language_">self</span>.graph = torch.cuda.CUDAGraph()</span><br><span class="line"></span><br><span class="line">        stream = torch.cuda.Stream()</span><br><span class="line">        stream.wait_stream(torch.cuda.current_stream())</span><br><span class="line"></span><br><span class="line">        <span class="keyword">with</span> torch.cuda.stream(stream), torch.inference_mode():</span><br><span class="line">            <span class="keyword">for</span> _ <span class="keyword">in</span> <span class="built_in">range</span>(<span class="number">3</span>):</span><br><span class="line">                fixed_codebook_generate(</span><br><span class="line">                    predictor, inputs_embeds=<span class="variable language_">self</span>.static_input,</span><br><span class="line">                    max_new_tokens=<span class="number">15</span>, do_sample=sample,</span><br><span class="line">                )</span><br><span class="line">        stream.synchronize()</span><br><span class="line"></span><br><span class="line">        <span class="keyword">with</span> torch.inference_mode(), torch.cuda.graph(</span><br><span class="line">            <span class="variable language_">self</span>.graph, stream=stream</span><br><span class="line">        ):</span><br><span class="line">            <span class="variable language_">self</span>.static_output = fixed_codebook_generate(</span><br><span class="line">                predictor, inputs_embeds=<span class="variable language_">self</span>.static_input,</span><br><span class="line">                max_new_tokens=<span class="number">15</span>, do_sample=sample,</span><br><span class="line">            ).sequences</span><br><span class="line"></span><br><span class="line">        torch.cuda.current_stream().wait_stream(stream)</span><br><span class="line"></span><br><span class="line">    <span class="keyword">def</span> <span class="title function_">__call__</span>(<span class="params"></span></span><br><span class="line"><span class="params">        self, *, inputs_embeds, max_new_tokens,</span></span><br><span class="line"><span class="params">        do_sample=<span class="literal">True</span>, top_k=<span class="number">50</span>, top_p=<span class="number">1.0</span>,</span></span><br><span class="line"><span class="params">        temperature=<span class="number">0.9</span>, **kwargs,</span></span><br><span class="line"><span class="params">    </span>):</span><br><span class="line">        <span class="keyword">if</span> (</span><br><span class="line">            inputs_embeds.shape != <span class="variable language_">self</span>.static_input.shape</span><br><span class="line">            <span class="keyword">or</span> max_new_tokens != <span class="number">15</span></span><br><span class="line">            <span class="keyword">or</span> do_sample != <span class="variable language_">self</span>.sample</span><br><span class="line">            <span class="keyword">or</span> top_k != <span class="number">50</span> <span class="keyword">or</span> top_p != <span class="number">1.0</span> <span class="keyword">or</span> temperature != <span class="number">0.9</span></span><br><span class="line">        ):</span><br><span class="line">            <span class="keyword">return</span> fixed_codebook_generate(</span><br><span class="line">                <span class="variable language_">self</span>.predictor, inputs_embeds=inputs_embeds,</span><br><span class="line">                max_new_tokens=max_new_tokens, do_sample=do_sample,</span><br><span class="line">                top_k=top_k, top_p=top_p,</span><br><span class="line">                temperature=temperature, **kwargs,</span><br><span class="line">            )</span><br><span class="line"></span><br><span class="line">        <span class="variable language_">self</span>.static_input.copy_(inputs_embeds)</span><br><span class="line">        <span class="variable language_">self</span>.graph.replay()</span><br><span class="line">        <span class="keyword">return</span> types.SimpleNamespace(</span><br><span class="line">            sequences=<span class="variable language_">self</span>.static_output.clone()</span><br><span class="line">        )</span><br></pre></td></tr></table></figure>
+
+<p>有几个细节需要保留：</p>
+<ul>
+<li>先预热，再捕获，避免把首次运行的额外行为混进图里。</li>
+<li>静态输入和输出需要保持生命周期，不能在每次调用时随意替换底层内存。</li>
+<li>返回输出副本，避免后续重放覆盖调用方仍在使用的结果。</li>
+<li>形状或采样参数不匹配时，回退普通固定步数预测。</li>
+<li>当前代码按单卡、固定精度使用；扩展到多 GPU、其他精度或批量输入时，还要增加设备、精度等检查。</li>
+</ul>
+<p>安装前，我用两个测试输入比较原始预测器、固定循环和图重放的贪心输出，并检查连续采样重放是否产生不同结果。它们是防止实现错误的回归检查，不等于已经完成了所有语言、音色与采样分布的完整评估。</p>
+<p>这一步之后，1.7B 的一组测试中，生成 4.32 秒音频约需 2.27 秒；流式测试中，生成 4.48 秒音频约需 2.43 秒，首块约 0.54 秒就绪。</p>
+<h2 id="六、在生成过程中解码音频，而不是最后切文件"><a href="#六、在生成过程中解码音频，而不是最后切文件" class="headerlink" title="六、在生成过程中解码音频，而不是最后切文件"></a>六、在生成过程中解码音频，而不是最后切文件</h2><p>推理提速后，还要让用户尽早拿到可播放的数据。</p>
+<p>我在 Talker 上注册 forward hook，获取已经生成的完整编码帧。收到一定数量的新帧后，立即解码并交给流式队列。</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">def</span> <span class="title function_">capture</span>(<span class="params">module, args, output</span>):</span><br><span class="line">    <span class="keyword">if</span> cancel.is_set():</span><br><span class="line">        <span class="keyword">raise</span> Cancelled()</span><br><span class="line"></span><br><span class="line">    codes = output.hidden_states[-<span class="number">1</span>]</span><br><span class="line">    <span class="keyword">if</span> codes <span class="keyword">is</span> <span class="literal">None</span>:          <span class="comment"># prefill 阶段没有完整编码帧</span></span><br><span class="line">        <span class="keyword">return</span></span><br><span class="line">    <span class="keyword">if</span> <span class="built_in">int</span>(codes[<span class="number">0</span>, <span class="number">0</span>]) == codec_eos_token_id:</span><br><span class="line">        <span class="keyword">return</span></span><br><span class="line"></span><br><span class="line">    frames.append(codes[<span class="number">0</span>].detach())</span><br><span class="line">    <span class="keyword">if</span> <span class="built_in">len</span>(frames) - emitted &gt;= chunk_frames:</span><br><span class="line">        emit()</span><br><span class="line"></span><br><span class="line">handle = tts.model.talker.register_forward_hook(capture)</span><br><span class="line"><span class="keyword">try</span>:</span><br><span class="line">    waves, sample_rate = tts.generate_custom_voice(...)</span><br><span class="line">    emit()                    <span class="comment"># 补发最后不足一块的尾部</span></span><br><span class="line"><span class="keyword">finally</span>:</span><br><span class="line">    handle.remove()</span><br></pre></td></tr></table></figure>
+
+<p>这段代码是 <code>Engine.stream()</code> 内部逻辑的节选，<code>frames</code>、<code>emitted</code>、取消标记与队列由外层维护。<code>hidden_states</code> 中编码的位置属于本次版本的内部接口，升级 Qwen3-TTS 或 Transformers 后必须重新验证。</p>
+<h3 id="分块不能只考虑“切多短”"><a href="#分块不能只考虑“切多短”" class="headerlink" title="分块不能只考虑“切多短”"></a>分块不能只考虑“切多短”</h3><p>本次默认每 12 个新编码帧输出一块，并为后续解码保留 25 帧左侧上下文：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">def</span> <span class="title function_">emit</span>():</span><br><span class="line">    <span class="keyword">nonlocal</span> emitted, first_audio</span><br><span class="line">    <span class="keyword">if</span> <span class="built_in">len</span>(frames) == emitted:</span><br><span class="line">        <span class="keyword">return</span></span><br><span class="line"></span><br><span class="line">    left = <span class="built_in">max</span>(<span class="number">0</span>, emitted - <span class="number">25</span>)</span><br><span class="line">    codes = torch.stack(frames[left:], dim=<span class="number">0</span>)</span><br><span class="line">    waves, sr = tts.model.speech_tokenizer.decode([</span><br><span class="line">        &#123;<span class="string">&quot;audio_codes&quot;</span>: codes&#125;</span><br><span class="line">    ])</span><br><span class="line"></span><br><span class="line">    <span class="comment"># 左侧上下文用于解码，但不能再次发送给播放器。</span></span><br><span class="line">    trim = (emitted - left) * samples_per_frame</span><br><span class="line">    audio = waves[<span class="number">0</span>][trim:]</span><br><span class="line">    emitted = <span class="built_in">len</span>(frames)</span><br><span class="line"></span><br><span class="line">    <span class="keyword">if</span> audio.size:</span><br><span class="line">        send(&#123;<span class="string">&quot;event&quot;</span>: <span class="string">&quot;audio&quot;</span>, <span class="string">&quot;audio&quot;</span>: audio, <span class="string">&quot;sample_rate&quot;</span>: sr&#125;)</span><br></pre></td></tr></table></figure>
+
+<p><code>samples_per_frame</code> 从 <code>get_decode_upsample_rate()</code> 读取，而不是凭模型名字猜帧率。本次解码器配置为 24 kHz、每帧 1920 个采样点，因此 12 帧对应约 0.96 秒音频。</p>
+<p>保留上下文是为了减少块边界与完整解码之间的差异，再裁掉已发送部分，避免重复播放。它不保证流式波形与一次性解码逐点完全相同：实测记录中仍有约 0.002–0.003 量级的波形 RMSE。</p>
+<p>块太短会增加解码和传输次数；块太长则延后首段返回。12 帧是本次实测采用的折中值，不是适合所有网络和硬件的固定答案。</p>
+<h2 id="七、用-NDJSON-传-PCM，前端按音频时间轴播放"><a href="#七、用-NDJSON-传-PCM，前端按音频时间轴播放" class="headerlink" title="七、用 NDJSON 传 PCM，前端按音频时间轴播放"></a>七、用 NDJSON 传 PCM，前端按音频时间轴播放</h2><p>服务端采用 HTTP 流式响应，逐行返回 JSON。音频编码为单声道 PCM16 little-endian，再经过 Base64 放入事件中：</p>
+<figure class="highlight python"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">pcm = (np.clip(audio, -<span class="number">1</span>, <span class="number">1</span>) * <span class="number">32767</span>).astype(<span class="string">&quot;&lt;i2&quot;</span>)</span><br><span class="line">event = &#123;</span><br><span class="line">    <span class="string">&quot;event&quot;</span>: <span class="string">&quot;audio&quot;</span>,</span><br><span class="line">    <span class="string">&quot;index&quot;</span>: index,</span><br><span class="line">    <span class="string">&quot;format&quot;</span>: <span class="string">&quot;pcm_s16le&quot;</span>,</span><br><span class="line">    <span class="string">&quot;channels&quot;</span>: <span class="number">1</span>,</span><br><span class="line">    <span class="string">&quot;sample_rate&quot;</span>: sr,</span><br><span class="line">    <span class="string">&quot;pcm&quot;</span>: base64.b64encode(pcm.tobytes()).decode(<span class="string">&quot;ascii&quot;</span>),</span><br><span class="line">&#125;</span><br><span class="line"><span class="keyword">yield</span> json.dumps(event) + <span class="string">&quot;\n&quot;</span></span><br></pre></td></tr></table></figure>
+
+<p>选择 PCM 是为了让浏览器直接还原采样点，省去本地流式播放链路中的额外音频格式转码。Base64 会增加约三分之一的数据体积；在 24 kHz 单声道 PCM16 下，原始数据约 48 KB&#x2F;s，对本机或普通内网场景较容易接受。</p>
+<p>协议约定为：</p>
+<table>
+<thead>
+<tr>
+<th>事件</th>
+<th>内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>audio</code></td>
+<td>分块编号、采样率、格式与 PCM 数据</td>
+</tr>
+<tr>
+<td><code>done</code></td>
+<td>完整 WAV 地址与性能记录</td>
+</tr>
+<tr>
+<td><code>error</code></td>
+<td>本轮生成失败原因</td>
+</tr>
+</tbody></table>
+<p>前端必须累积读取结果，再按换行符解析。一次 <code>reader.read()</code> 不保证恰好对应一条 JSON：</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">const</span> reader = response.<span class="property">body</span>.<span class="title function_">getReader</span>();</span><br><span class="line"><span class="keyword">const</span> decoder = <span class="keyword">new</span> <span class="title class_">TextDecoder</span>();</span><br><span class="line"><span class="keyword">let</span> pending = <span class="string">&quot;&quot;</span>;</span><br><span class="line"></span><br><span class="line"><span class="keyword">while</span> (<span class="literal">true</span>) &#123;</span><br><span class="line">  <span class="keyword">const</span> &#123; done, value &#125; = <span class="keyword">await</span> reader.<span class="title function_">read</span>();</span><br><span class="line">  <span class="keyword">if</span> (done) <span class="keyword">break</span>;</span><br><span class="line">  pending += decoder.<span class="title function_">decode</span>(value, &#123; <span class="attr">stream</span>: <span class="literal">true</span> &#125;);</span><br><span class="line"></span><br><span class="line">  <span class="keyword">let</span> boundary;</span><br><span class="line">  <span class="keyword">while</span> ((boundary = pending.<span class="title function_">indexOf</span>(<span class="string">&quot;\n&quot;</span>)) &gt;= <span class="number">0</span>) &#123;</span><br><span class="line">    <span class="keyword">const</span> line = pending.<span class="title function_">slice</span>(<span class="number">0</span>, boundary);</span><br><span class="line">    pending = pending.<span class="title function_">slice</span>(boundary + <span class="number">1</span>);</span><br><span class="line">    <span class="keyword">if</span> (line) <span class="title function_">handleEvent</span>(<span class="title class_">JSON</span>.<span class="title function_">parse</span>(line));</span><br><span class="line">  &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>服务端保证每个事件以换行符结束。客户端还应记录是否收到 <code>done</code>，如果连接提前结束，就显示中断，不能把已经播放过部分声音当作整段生成成功。</p>
+<h3 id="连续播放的关键是-nextTime"><a href="#连续播放的关键是-nextTime" class="headerlink" title="连续播放的关键是 nextTime"></a>连续播放的关键是 <code>nextTime</code></h3><p><a target="_blank" rel="noopener" href="https://developer.mozilla.org/en-US/docs/Web/API/AudioBufferSourceNode/start">Web Audio 的 <code>start(when)</code></a>可以把音频安排到 <code>AudioContext</code> 的时间轴上。这里为每个音频块创建一个 <code>AudioBufferSourceNode</code>，但持续维护同一条播放时间轴：</p>
+<figure class="highlight javascript"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br></pre></td><td class="code"><pre><span class="line"><span class="keyword">let</span> context;</span><br><span class="line"><span class="keyword">let</span> nextTime = <span class="number">0</span>;</span><br><span class="line"><span class="keyword">let</span> generation = <span class="number">0</span>;</span><br><span class="line"><span class="keyword">let</span> generating = <span class="literal">false</span>;</span><br><span class="line"><span class="keyword">const</span> sources = <span class="keyword">new</span> <span class="title class_">Set</span>();</span><br><span class="line"></span><br><span class="line"><span class="comment">// 在用户点击生成的处理函数中执行。</span></span><br><span class="line"><span class="keyword">async</span> <span class="keyword">function</span> <span class="title function_">preparePlayback</span>(<span class="params"></span>) &#123;</span><br><span class="line">  context ??= <span class="keyword">new</span> <span class="title class_">AudioContext</span>(&#123; <span class="attr">latencyHint</span>: <span class="string">&quot;interactive&quot;</span> &#125;);</span><br><span class="line">  <span class="keyword">await</span> context.<span class="title function_">resume</span>();</span><br><span class="line">  nextTime = context.<span class="property">currentTime</span> + <span class="number">0.08</span>;</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="keyword">function</span> <span class="title function_">schedule</span>(<span class="params">pcm, sampleRate</span>) &#123;</span><br><span class="line">  <span class="keyword">const</span> raw = <span class="title function_">atob</span>(pcm);</span><br><span class="line">  <span class="keyword">const</span> bytes = <span class="keyword">new</span> <span class="title class_">Uint8Array</span>(raw.<span class="property">length</span>);</span><br><span class="line">  <span class="keyword">for</span> (<span class="keyword">let</span> i = <span class="number">0</span>; i &lt; raw.<span class="property">length</span>; i++) bytes[i] = raw.<span class="title function_">charCodeAt</span>(i);</span><br><span class="line"></span><br><span class="line">  <span class="keyword">const</span> view = <span class="keyword">new</span> <span class="title class_">DataView</span>(bytes.<span class="property">buffer</span>);</span><br><span class="line">  <span class="keyword">const</span> buffer = context.<span class="title function_">createBuffer</span>(<span class="number">1</span>, raw.<span class="property">length</span> / <span class="number">2</span>, sampleRate);</span><br><span class="line">  <span class="keyword">const</span> data = buffer.<span class="title function_">getChannelData</span>(<span class="number">0</span>);</span><br><span class="line">  <span class="keyword">for</span> (<span class="keyword">let</span> i = <span class="number">0</span>; i &lt; data.<span class="property">length</span>; i++) &#123;</span><br><span class="line">    data[i] = view.<span class="title function_">getInt16</span>(i * <span class="number">2</span>, <span class="literal">true</span>) / <span class="number">32768</span>;</span><br><span class="line">  &#125;</span><br><span class="line"></span><br><span class="line">  <span class="keyword">const</span> source = context.<span class="title function_">createBufferSource</span>();</span><br><span class="line">  <span class="keyword">const</span> run = generation;</span><br><span class="line">  source.<span class="property">buffer</span> = buffer;</span><br><span class="line">  source.<span class="title function_">connect</span>(context.<span class="property">destination</span>);</span><br><span class="line">  sources.<span class="title function_">add</span>(source);</span><br><span class="line"></span><br><span class="line">  source.<span class="property">onended</span> = <span class="function">() =&gt;</span> &#123;</span><br><span class="line">    sources.<span class="title function_">delete</span>(source);</span><br><span class="line">    <span class="keyword">if</span> (run === generation &amp;&amp; !generating &amp;&amp; !sources.<span class="property">size</span>) &#123;</span><br><span class="line">      <span class="comment">// 此时才能更新为本轮播放完成。</span></span><br><span class="line">    &#125;</span><br><span class="line">  &#125;;</span><br><span class="line"></span><br><span class="line">  <span class="keyword">const</span> when = <span class="title class_">Math</span>.<span class="title function_">max</span>(nextTime, context.<span class="property">currentTime</span> + <span class="number">0.08</span>);</span><br><span class="line">  source.<span class="title function_">start</span>(when);</span><br><span class="line">  nextTime = when + buffer.<span class="property">duration</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>下一块提前到达时，它会接在上一块的结尾，而不是每块都在上一块结束后额外等待 80 毫秒。只有队列太短或已耗尽时，才用当前时间加少量提前量重新安排。</p>
+<p>这 80 毫秒只是本次本地实现采用的调度余量，不是完整的网络自适应抖动缓冲。如果部署到抖动较大的网络，还应增加起播缓冲、记录排队时长和 underrun 次数，并按实际到达情况调整水位。持续播放仍然要求长期供给速度足够快。</p>
+<p>另外，实际出声延迟还包含这部分调度余量、音频设备输出延迟等，因此页面显示“首段 0.60 秒”不能表述为声卡已经在 0.60 秒时发声。</p>
+<h2 id="八、停止操作需要同时处理前后端"><a href="#八、停止操作需要同时处理前后端" class="headerlink" title="八、停止操作需要同时处理前后端"></a>八、停止操作需要同时处理前后端</h2><p>为了让停止按钮真正生效，我保留了两层取消机制：浏览器用 <code>AbortController</code> 结束请求并停止已排入时间轴的音频；服务端观察请求断开，设置线程事件，在后续生成回调中退出。</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">停止按钮</span><br><span class="line">  ├─ 中断 HTTP 请求</span><br><span class="line">  ├─ 停止所有已调度的 AudioBufferSourceNode</span><br><span class="line">  └─ 更新本轮编号，忽略旧回调</span><br><span class="line"></span><br><span class="line">服务端断开清理</span><br><span class="line">  ├─ 设置 cancel 事件</span><br><span class="line">  ├─ 移除 forward hook</span><br><span class="line">  └─ 释放任务锁，允许下一轮生成</span><br></pre></td></tr></table></figure>
+
+<p>前端还修正了一个状态问题：调用 <code>source.stop()</code> 同样会触发 <code>onended</code>。如果没有检查本轮编号，旧音频的回调可能把“已停止”覆盖成“播放完成”。上面代码中的 <code>run === generation</code> 就是为了避免这种情况。</p>
+<p>后端没有让多个请求同时操作同一个模型。当前实现使用共享锁串行处理生成任务，忙碌时明确返回 429，并以有界队列传递音频块，避免前端处理变慢时无限积压输出。</p>
+<p>HTTP 状态码为 200 也不表示整个流已经成功结束。连接建立后发生的错误通过 <code>error</code> 事件返回；只有收到 <code>done</code>，前端才展示本轮完整结果。</p>
+<h2 id="九、实测结果与-0-6B-对比"><a href="#九、实测结果与-0-6B-对比" class="headerlink" title="九、实测结果与 0.6B 对比"></a>九、实测结果与 0.6B 对比</h2><p>以下是 2026 年 11 月 4 日本机实验留下的记录。内部基准、HTTP 测试和浏览器测试属于不同测量口径，不能把它们当作严格控制所有变量的单一实验。模型启用随机采样，输出时长也会变化。</p>
+<h3 id="1-7B-的主要优化阶段"><a href="#1-7B-的主要优化阶段" class="headerlink" title="1.7B 的主要优化阶段"></a>1.7B 的主要优化阶段</h3><table>
+<thead>
+<tr>
+<th>测量阶段</th>
+<th align="right">耗时 &#x2F; 秒</th>
+<th align="right">音频时长 &#x2F; 秒</th>
+<th align="right">RTF</th>
+<th align="right">首块就绪 &#x2F; 秒</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>内部基准：原始预测器</td>
+<td align="right">4.79</td>
+<td align="right">3.60</td>
+<td align="right">1.33</td>
+<td align="right">整段返回</td>
+</tr>
+<tr>
+<td>内部基准：固定循环、四线程</td>
+<td align="right">4.46</td>
+<td align="right">3.60</td>
+<td align="right">1.24</td>
+<td align="right">整段返回</td>
+</tr>
+<tr>
+<td>内部基准：流式、未使用图重放</td>
+<td align="right">4.70</td>
+<td align="right">3.60</td>
+<td align="right">1.31</td>
+<td align="right">1.29</td>
+</tr>
+<tr>
+<td>图重放后的流式基准</td>
+<td align="right">2.43</td>
+<td align="right">4.48</td>
+<td align="right">0.54</td>
+<td align="right">0.54</td>
+</tr>
+<tr>
+<td>最终浏览器记录</td>
+<td align="right">2.78</td>
+<td align="right">4.80</td>
+<td align="right">0.58</td>
+<td align="right">0.60</td>
+</tr>
+</tbody></table>
+<p>其中，“最终浏览器记录”的耗时和首块时间是页面展示的服务端统计，不包含扬声器延迟。另一次完整 HTTP 链路测试中，1.7B 首块服务端就绪约 0.86 秒，客户端收到首块约 0.87 秒，也说明结果会有波动。</p>
+<p><img src="/images/qwen3-tts/streaming-result.png" alt="优化后的流式播放结果"></p>
+<h3 id="小模型不一定能消除主要开销"><a href="#小模型不一定能消除主要开销" class="headerlink" title="小模型不一定能消除主要开销"></a>小模型不一定能消除主要开销</h3><p>在尚未启用 CUDA Graph 时，0.6B 的内部完整生成测试约为 5.94 秒生成 5.12 秒音频，RTF 约 1.16，仍然没有快于实时。</p>
+<p>启用图重放后，一次 0.6B 流式基准约为 2.56 秒生成 4.80 秒音频，RTF 约 0.53，首块约 0.53 秒就绪。它与这次 1.7B 图重放基准的实时率接近。</p>
+<p>因此，我没有仅凭参数量就把默认模型换成 0.6B，而是默认保留支持语气要求的 1.7B，把 0.6B 作为可选项。这不是对两个模型音质高低的正式评测，也不代表其他硬件上一定会得到同样结论。</p>
+<h2 id="十、验证范围与部署边界"><a href="#十、验证范围与部署边界" class="headerlink" title="十、验证范围与部署边界"></a>十、验证范围与部署边界</h2><p>除了“能听到声音”，本次还检查了以下内容：</p>
+<table>
+<thead>
+<tr>
+<th>检查项</th>
+<th>实际验证内容</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>GPU 位置</td>
+<td>主模型和解码器参数均位于 CUDA 设备</td>
+</tr>
+<tr>
+<td>编码等价性</td>
+<td>两个测试输入的贪心输出，与原始内部预测器一致</td>
+</tr>
+<tr>
+<td>图重放随机状态</td>
+<td>连续采样重放的测试输出有变化</td>
+</tr>
+<tr>
+<td>流式长度</td>
+<td>拼接后的流式采样数，与最终完整波形采样数一致</td>
+</tr>
+<tr>
+<td>分块差异</td>
+<td>记录流式拼接与完整解码的波形 RMSE，没有声称逐点相同</td>
+</tr>
+<tr>
+<td>取消与恢复</td>
+<td>首块前断开、生成中停止后，均能继续发起新请求</td>
+</tr>
+<tr>
+<td>界面状态</td>
+<td>已停止不会被旧回调覆盖，轻量模型禁用不支持的语气输入</td>
+</tr>
+<tr>
+<td>参数与并发</td>
+<td>无效参数返回 422，繁忙请求返回 429</td>
+</tr>
+</tbody></table>
+<p>这些测试能发现一部分实现错误，但不能代替对多语言、长文本、不同音色和复杂语气的主观试听与质量评估。RTF 小于 1 也只是提供了持续播放的速度余量，网络抖动、系统抢占或浏览器后台节流仍可能造成停顿。</p>
+<p>实际接入时，我会继续记录首块时间的 P50&#x2F;P95、块间到达间隔、播放队列剩余时长与 underrun 次数，而不是只展示一次最好成绩。</p>
+<p>Windows 启动阶段还遇到过系统提交内存不足、页面文件错误与权重映射路径的底层崩溃。分片加载和缓冲读取用于绕开本机的加载问题，不是这次推理提速的主要来源，也不能据此断言所有 Windows 或 PyTorch 环境都有相同缺陷。</p>
+<p>附件中的缓冲读取器会替换 Transformers 的内部加载入口，仅在本次版本和可信本地权重上使用。环境正常时，可以关闭这一兼容开关，优先使用原生加载路径。升级依赖后，固定预测器、forward hook 和加载兼容层都需要重新做回归验证。</p>
+<h2 id="十一、核心代码与接入方式"><a href="#十一、核心代码与接入方式" class="headerlink" title="十一、核心代码与接入方式"></a>十一、核心代码与接入方式</h2><p><a href="/downloads/qwen3-tts/qwen3-tts-realtime-code.zip">下载核心代码快照 ZIP</a> · <a href="/downloads/qwen3-tts/measurements.json">下载实测数据 JSON</a></p>
+<p>附件不包含模型权重、运行日志或本机凭据；示例文案已经通用化。它是本次服务实现的代码快照，依赖与模型版本需要按 README 准备，不是安装后即可脱离模型文件运行的独立软件包。</p>
+<p>主要文件包括：</p>
+<figure class="highlight text"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">qwen3-tts-realtime-code/</span><br><span class="line">├── fast_engine.py       # 固定编码预测、分块解码、取消与统计</span><br><span class="line">├── graph_predictor.py   # CUDA Graph 捕获、重放与验证</span><br><span class="line">├── fast_app.py          # FastAPI 完整音频与 NDJSON 流式接口</span><br><span class="line">├── streaming.html      # Web Audio 调度、停止和下载</span><br><span class="line">├── run-fast.py          # 加载、预热与服务启动</span><br><span class="line">├── service_config.py    # 环境变量配置</span><br><span class="line">├── checkpoint_reader.py # 可选的加载兼容措施</span><br><span class="line">├── static/docs/         # 接口文档静态资源及其许可说明</span><br><span class="line">└── tests/               # 不依赖真实 GPU 的接口契约测试</span><br></pre></td></tr></table></figure>
+
+<p>服务提供两个主要入口：</p>
+<table>
+<thead>
+<tr>
+<th>接口</th>
+<th>返回方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>POST /api/tts</code></td>
+<td>完整生成后返回 WAV 地址和统计</td>
+</tr>
+<tr>
+<td><code>POST /api/tts/stream</code></td>
+<td>逐行返回音频块，最后返回完整结果</td>
+</tr>
+</tbody></table>
+<p>例如，以流式方式请求 1.7B 模型：</p>
+<figure class="highlight json"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br></pre></td><td class="code"><pre><span class="line"><span class="punctuation">&#123;</span></span><br><span class="line">  <span class="attr">&quot;text&quot;</span><span class="punctuation">:</span> <span class="string">&quot;你好，欢迎使用本地语音合成服务。&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;language&quot;</span><span class="punctuation">:</span> <span class="string">&quot;Chinese&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;speaker&quot;</span><span class="punctuation">:</span> <span class="string">&quot;Serena&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;instruct&quot;</span><span class="punctuation">:</span> <span class="string">&quot;用自然、清晰、亲切的语气说话。&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;model&quot;</span><span class="punctuation">:</span> <span class="string">&quot;quality&quot;</span><span class="punctuation">,</span></span><br><span class="line">  <span class="attr">&quot;chunk_frames&quot;</span><span class="punctuation">:</span> <span class="number">12</span></span><br><span class="line"><span class="punctuation">&#125;</span></span><br></pre></td></tr></table></figure>
+
+<p>模型目录、输出目录、CUDA Graph 开关、线程数等通过环境变量配置。默认服务面向本机使用；如果要开放给其他机器，还需要结合部署环境补充访问控制、请求限流和反向代理配置，并确认代理不会缓冲流式响应。CORS 不能替代身份认证。</p>
+<p>这次优化的重点是把“更早听到第一段”和“后续声音能够持续供应”同时处理好：分块传输缩短开始等待，推理加速补足持续供给，播放调度则让已经到达的数据接到正确的时间线上。</p>
+<nav class="post-neighbors" aria-label="相邻文章"><a href="/posts/agent-desktop-wechat-practice/">下一篇：用命令行操作微信：我的 agent-desktop 本地实践</a></nav></article><aside class="reading-toc panel"><h2 class="panel-title">阅读目录</h2><ol class="toc"><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%80%E3%80%81%E9%80%89%E6%8B%A9%E6%A8%A1%E5%9E%8B%E4%B8%8E%E6%9C%AC%E5%9C%B0%E8%BF%90%E8%A1%8C%E7%8E%AF%E5%A2%83"><span class="toc-number">1.</span> <span class="toc-text">一、选择模型与本地运行环境</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%8C%E3%80%81%E4%B8%BA%E4%BB%80%E4%B9%88%E7%94%A8%E4%BA%86-GPU%EF%BC%8C%E6%92%AD%E6%94%BE%E4%BB%8D%E7%84%B6%E4%BC%9A%E5%8D%A1%E9%A1%BF"><span class="toc-number">2.</span> <span class="toc-text">二、为什么用了 GPU，播放仍然会卡顿</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-%E7%AD%89%E6%95%B4%E6%AE%B5%E7%94%9F%E6%88%90%E5%AE%8C%EF%BC%8C%E6%89%8D%E5%BC%80%E5%A7%8B%E6%92%AD%E6%94%BE"><span class="toc-number">2.1.</span> <span class="toc-text">1. 等整段生成完，才开始播放</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#2-%E6%8F%90%E5%89%8D%E5%BC%80%E5%A7%8B%E6%92%AD%E6%94%BE%EF%BC%8C%E4%BD%86%E5%90%8E%E7%BB%AD%E9%9F%B3%E9%A2%91%E4%BE%9B%E7%BB%99%E4%B8%8D%E8%B6%B3"><span class="toc-number">2.2.</span> <span class="toc-text">2. 提前开始播放，但后续音频供给不足</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#3-%E5%90%8E%E7%AB%AF%E8%B6%B3%E5%A4%9F%E5%BF%AB%EF%BC%8C%E5%89%8D%E7%AB%AF%E5%8D%B4%E6%B2%A1%E6%9C%89%E8%BF%9E%E7%BB%AD%E8%B0%83%E5%BA%A6"><span class="toc-number">2.3.</span> <span class="toc-text">3. 后端足够快，前端却没有连续调度</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%89%E3%80%81%E5%85%88%E6%B5%8B%E9%87%8F%EF%BC%8C%E5%86%8D%E5%86%B3%E5%AE%9A%E4%BC%98%E5%8C%96%E5%93%AA%E9%87%8C"><span class="toc-number">3.</span> <span class="toc-text">三、先测量，再决定优化哪里</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%9B%9B%E3%80%81%E5%85%88%E5%87%8F%E5%B0%91%E5%9B%BA%E5%AE%9A%E7%BC%96%E7%A0%81%E9%A2%84%E6%B5%8B%E7%9A%84%E5%BE%AA%E7%8E%AF%E5%BC%80%E9%94%80"><span class="toc-number">4.</span> <span class="toc-text">四、先减少固定编码预测的循环开销</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%BA%94%E3%80%81%E7%9C%9F%E6%AD%A3%E6%98%8E%E6%98%BE%E7%9A%84%E6%8F%90%E5%8D%87%E6%9D%A5%E8%87%AA-CUDA-Graph"><span class="toc-number">5.</span> <span class="toc-text">五、真正明显的提升来自 CUDA Graph</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%AD%E3%80%81%E5%9C%A8%E7%94%9F%E6%88%90%E8%BF%87%E7%A8%8B%E4%B8%AD%E8%A7%A3%E7%A0%81%E9%9F%B3%E9%A2%91%EF%BC%8C%E8%80%8C%E4%B8%8D%E6%98%AF%E6%9C%80%E5%90%8E%E5%88%87%E6%96%87%E4%BB%B6"><span class="toc-number">6.</span> <span class="toc-text">六、在生成过程中解码音频，而不是最后切文件</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%88%86%E5%9D%97%E4%B8%8D%E8%83%BD%E5%8F%AA%E8%80%83%E8%99%91%E2%80%9C%E5%88%87%E5%A4%9A%E7%9F%AD%E2%80%9D"><span class="toc-number">6.1.</span> <span class="toc-text">分块不能只考虑“切多短”</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B8%83%E3%80%81%E7%94%A8-NDJSON-%E4%BC%A0-PCM%EF%BC%8C%E5%89%8D%E7%AB%AF%E6%8C%89%E9%9F%B3%E9%A2%91%E6%97%B6%E9%97%B4%E8%BD%B4%E6%92%AD%E6%94%BE"><span class="toc-number">7.</span> <span class="toc-text">七、用 NDJSON 传 PCM，前端按音频时间轴播放</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#%E8%BF%9E%E7%BB%AD%E6%92%AD%E6%94%BE%E7%9A%84%E5%85%B3%E9%94%AE%E6%98%AF-nextTime"><span class="toc-number">7.1.</span> <span class="toc-text">连续播放的关键是 nextTime</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%85%AB%E3%80%81%E5%81%9C%E6%AD%A2%E6%93%8D%E4%BD%9C%E9%9C%80%E8%A6%81%E5%90%8C%E6%97%B6%E5%A4%84%E7%90%86%E5%89%8D%E5%90%8E%E7%AB%AF"><span class="toc-number">8.</span> <span class="toc-text">八、停止操作需要同时处理前后端</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E4%B9%9D%E3%80%81%E5%AE%9E%E6%B5%8B%E7%BB%93%E6%9E%9C%E4%B8%8E-0-6B-%E5%AF%B9%E6%AF%94"><span class="toc-number">9.</span> <span class="toc-text">九、实测结果与 0.6B 对比</span></a><ol class="toc-child"><li class="toc-item toc-level-3"><a class="toc-link" href="#1-7B-%E7%9A%84%E4%B8%BB%E8%A6%81%E4%BC%98%E5%8C%96%E9%98%B6%E6%AE%B5"><span class="toc-number">9.1.</span> <span class="toc-text">1.7B 的主要优化阶段</span></a></li><li class="toc-item toc-level-3"><a class="toc-link" href="#%E5%B0%8F%E6%A8%A1%E5%9E%8B%E4%B8%8D%E4%B8%80%E5%AE%9A%E8%83%BD%E6%B6%88%E9%99%A4%E4%B8%BB%E8%A6%81%E5%BC%80%E9%94%80"><span class="toc-number">9.2.</span> <span class="toc-text">小模型不一定能消除主要开销</span></a></li></ol></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%8D%81%E3%80%81%E9%AA%8C%E8%AF%81%E8%8C%83%E5%9B%B4%E4%B8%8E%E9%83%A8%E7%BD%B2%E8%BE%B9%E7%95%8C"><span class="toc-number">10.</span> <span class="toc-text">十、验证范围与部署边界</span></a></li><li class="toc-item toc-level-2"><a class="toc-link" href="#%E5%8D%81%E4%B8%80%E3%80%81%E6%A0%B8%E5%BF%83%E4%BB%A3%E7%A0%81%E4%B8%8E%E6%8E%A5%E5%85%A5%E6%96%B9%E5%BC%8F"><span class="toc-number">11.</span> <span class="toc-text">十一、核心代码与接入方式</span></a></li></ol><a class="back-link" href="/">↖ 返回首页</a></aside></div>
+</main>
+<footer><a class="brand light-only" href="/">april<span class="brand-dot">.</span></a><a class="brand dark-only" href="/">APRIL<span>NOTE!</span></a><p>© 2026 April · 用文字存档每一次探索</p><nav class="social-links footer-links" aria-label="April 的其他平台"><a href="https://github.com/dong6255" target="_blank" rel="noopener noreferrer">GitHub <span aria-hidden="true">↗</span><span class="sr-only">（在新标签页打开）</span></a><a href="https://www.cnblogs.com/april-code" target="_blank" rel="noopener noreferrer">博客园 <span aria-hidden="true">↗</span><span class="sr-only">（在新标签页打开）</span></a><a href="https://blog.csdn.net/chunhev5" target="_blank" rel="noopener noreferrer">CSDN <span aria-hidden="true">↗</span><span class="sr-only">（在新标签页打开）</span></a></nav>
+<small><span class="status-dot" aria-hidden="true"></span> 用 Hexo 构建，用好奇心驱动。<code>made for the open web.</code></small></footer>
+<dialog id="search-dialog"><form method="dialog"><h2>查找笔记</h2><button class="close" aria-label="关闭搜索">×</button></form><label for="search-input">输入标题或内容关键词</label><input id="search-input" type="search" placeholder="今天想探索什么？" autocomplete="off" data-source="/search.json"><p id="search-status" role="status"></p><div id="search-results"></div></dialog><button class="top-button" type="button" aria-label="返回顶部" hidden>↑</button>
+</body></html>
