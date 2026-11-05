@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://dong6255.github.io/sitemap.xml
